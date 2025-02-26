@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+import os
+import argparse
+import subprocess
+import urllib.request
+import tarfile
+import shutil
+import toml
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress
+from rich.table import Table
+
+# Directories
+SOURCES_BASE_DIR = os.path.expanduser('/home/user/sources')  # Base directory for all package sources
+BUILD_DIR = os.path.expanduser('/home/user/sources/build')
+INSTALL_DIR = os.path.expanduser('/usr')
+
+console = Console()
+
+def load_package_info(toml_path):
+    """Load package information from a TOML file."""
+    with open(toml_path, 'r') as file:
+        return toml.load(file)
+
+def fetch_source(url, dest_dir):
+    """Download the source tarball if it doesn't already exist."""
+    filename = os.path.join(dest_dir, os.path.basename(url))
+    if not os.path.exists(filename):
+        console.print(f"[bold cyan]Downloading {url}...[/bold cyan]")
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Downloading...[/cyan]", total=100)
+            def update_to(block_num=1, block_size=1, total_size=None):
+                progress.update(task, advance=block_num * block_size - progress.tasks[0].completed)
+            urllib.request.urlretrieve(url, filename, reporthook=update_to)
+    else:
+        console.print(f"[bold green]{filename} already exists. Skipping download.[/bold green]")
+    return filename
+
+def extract_tarball(tarball, dest_dir):
+    """Extract a tarball and return the source directory."""
+    console.print(f"[bold cyan]Extracting {tarball}...[/bold cyan]")
+    if tarball.endswith('.tar.xz'):
+        with tarfile.open(tarball, 'r:xz') as tar:
+            tar.extractall(path=dest_dir)
+    elif tarball.endswith('.tar.gz'):
+        with tarfile.open(tarball, 'r:gz') as tar:
+            tar.extractall(path=dest_dir)
+    else:
+        raise Exception(f"Unsupported archive format: {tarball}")
+
+    # Look for directories in the destination directory
+    extracted_dirs = [
+        os.path.join(dest_dir, d)
+        for d in os.listdir(dest_dir)
+        if os.path.isdir(os.path.join(dest_dir, d))
+    ]
+
+    if len(extracted_dirs) == 1:
+        return extracted_dirs[0]
+    elif len(extracted_dirs) > 1:
+        # If multiple directories, try to find the one that matches the package name
+        package_name = os.path.basename(tarball).split('.tar')[0]
+        matching_dirs = [d for d in extracted_dirs if package_name in d]
+        if matching_dirs:
+            return matching_dirs[0]
+        else:
+            # If no match, return the first directory (or handle as needed)
+            console.print(f"[bold yellow]Warning: Multiple directories found. Using the first one: {extracted_dirs[0]}[/bold yellow]")
+            return extracted_dirs[0]
+    else:
+        # If no directories, return the destination directory itself
+        return dest_dir
+
+def build_package(src_dir, commands, stage):
+    """Build the package using the provided commands."""
+    console.print(f"[bold cyan]{stage.capitalize()} package in {src_dir}...[/bold cyan]")
+    for command in commands:
+        console.print(f"[bold yellow]Running: {command}[/bold yellow]")
+        result = subprocess.run(command, shell=True, cwd=src_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            console.print(f"[bold red]Error: {result.stderr.decode()}[/bold red]")
+            raise Exception(f"Command '{command}' failed.")
+
+def find_package_toml(package_name):
+    """Find the TOML file for the given package in any subdirectory under SOURCES_BASE_DIR."""
+    for root, _, files in os.walk(SOURCES_BASE_DIR):
+        for file in files:
+            if file.endswith('.toml') and package_name in file:
+                return os.path.join(root, file)
+    raise Exception(f"Package '{package_name}' not found in {SOURCES_BASE_DIR}.")
+
+def install_package(package_name):
+    """Install a package."""
+    toml_path = find_package_toml(package_name)
+    package_info = load_package_info(toml_path)
+    package = package_info['package']
+    build = package_info['build']
+
+    # Fetch and extract source
+    tarball = fetch_source(package['src'][0], os.path.dirname(toml_path))  # Use the directory of the TOML file
+    src_dir = extract_tarball(tarball, BUILD_DIR)
+    console.print(f"[bold cyan]Using source directory: {src_dir}[/bold cyan]")
+
+    # Build and install
+    if 'configure' in build:
+        build_package(src_dir, build['configure'], 'configuring')
+    if 'compile' in build:
+        build_package(src_dir, build['compile'], 'compiling')
+    if 'install' in build:
+        build_package(src_dir, build['install'], 'installing')
+
+    # Clean up
+    shutil.rmtree(src_dir)
+    os.remove(tarball)
+
+    console.print(Panel("[bold green]✔ Installation Complete![/bold green]", style="green"))
+
+def search_packages(query):
+    """Search for packages matching the query in any subdirectory under SOURCES_BASE_DIR."""
+    console.print(f"[bold cyan]Searching for packages containing '{query}'...[/bold cyan]")
+    matches = []
+    for root, _, files in os.walk(SOURCES_BASE_DIR):
+        for file in files:
+            if file.endswith('.toml') and query in file:
+                matches.append(file)
+    if matches:
+        table = Table(title="Matching Packages")
+        table.add_column("Package Name", style="cyan")
+        table.add_column("Location", style="magenta")
+        for match in matches:
+            table.add_row(match, os.path.dirname(match))
+        console.print(table)
+    else:
+        console.print("[bold yellow]No matching packages found.[/bold yellow]")
+
+def list_installed_packages():
+    """List installed packages."""
+    console.print("[bold cyan]Listing installed packages...[/bold cyan]")
+    installed_packages = []
+    for root, _, files in os.walk(INSTALL_DIR):
+        for file in files:
+            if file.endswith('.toml'):
+                installed_packages.append(file)
+    if installed_packages:
+        table = Table(title="Installed Packages")
+        table.add_column("Package Name", style="cyan")
+        table.add_column("Location", style="magenta")
+        for package in installed_packages:
+            table.add_row(package, os.path.dirname(package))
+        console.print(table)
+    else:
+        console.print("[bold yellow]No installed packages found.[/bold yellow]")
+
+def remove_package(package_name):
+    """Remove an installed package."""
+    console.print(f"[bold cyan]Removing package '{package_name}'...[/bold cyan]")
+    toml_path = find_package_toml(package_name)
+    package_info = load_package_info(toml_path)
+    files_to_remove = package_info.get('install', {}).get('files', [])
+
+    removed_files = []
+    missing_files = []
+
+    for file in files_to_remove:
+        full_path = os.path.join(INSTALL_DIR, file.lstrip('/'))
+        if os.path.exists(full_path):
+            os.remove(full_path)
+            removed_files.append(full_path)
+            console.print(f"[bold yellow]Removed {full_path}[/bold yellow]")
+        else:
+            missing_files.append(full_path)
+            console.print(f"[bold red]File {full_path} does not exist.[/bold red]")
+
+    if removed_files:
+        console.print(Panel(f"[bold green]✔ Package '{package_name}' removed successfully.[/bold green]", style="green"))
+    if missing_files:
+        console.print(Panel(f"[bold red]Warning: Some files were not found and could not be removed.[/bold red]", style="red"))
+
+def update_package(package_name):
+    """Update an installed package."""
+    console.print(f"[bold cyan]Updating package '{package_name}'...[/bold cyan]")
+    remove_package(package_name)
+    install_package(package_name)
+    console.print(Panel(f"[bold green]✔ Package '{package_name}' updated successfully.[/bold green]", style="green"))
+
+def main():
+    """Main function to handle command-line arguments."""
+    parser = argparse.ArgumentParser(description='LXPKG - Simple Package Manager')
+    parser.add_argument('command', choices=['install', 'search', 'remove', 'update', 'list'], help='Command to run')
+    parser.add_argument('package', nargs='?', help='Name of the package')
+
+    args = parser.parse_args()
+
+    try:
+        if args.command == 'install':
+            install_package(args.package)
+        elif args.command == 'search':
+            search_packages(args.package)
+        elif args.command == 'remove':
+            remove_package(args.package)
+        elif args.command == 'update':
+            update_package(args.package)
+        elif args.command == 'list':
+            list_installed_packages()
+    except Exception as e:
+        console.print(Panel(f"[bold red]Error: {e}[/bold red]", style="red"))
+
+if __name__ == "__main__":
+    main()
+
