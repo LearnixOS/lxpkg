@@ -5,8 +5,8 @@
 
 <div align="center">
       
-## 𝗟𝗫𝗣𝗞𝗚
-# The independent Package Manager for Gnu/Linux Distributions
+# 𝗟𝗫𝗣𝗞𝗚
+### The independent Package Manager for Gnu/Linux Distributions
 
 
 <h1>
