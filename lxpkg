@@ -6,14 +6,28 @@ import urllib.request
 import tarfile
 import shutil
 import toml
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress
 from rich.table import Table
+from rich.tree import Tree
+from config import SOURCES_BASE_DIR, BUILD_DIR, INSTALL_DIR, LOG_DIR
 from logger import logger
-from config import SOURCES_BASE_DIR, BUILD_DIR, INSTALL_DIR
 
 console = Console()
+DB_PATH = os.path.join(INSTALL_DIR, "package_db.sqlite")
+
+# Initialize SQLite database
+def init_db():
+    os.makedirs(INSTALL_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS packages
+                 (name TEXT PRIMARY KEY, version TEXT, files TEXT)''')
+    conn.commit()
+    conn.close()
 
 def load_package_info(toml_path):
     with open(toml_path, 'r') as file:
@@ -21,37 +35,47 @@ def load_package_info(toml_path):
 
 def fetch_source(url, dest_dir):
     filename = os.path.join(dest_dir, os.path.basename(url))
-    if not os.path.exists(filename):
+    if os.path.exists(filename):
+        # Basic integrity check (e.g., size > 0, or use hash if available)
+        if os.path.getsize(filename) > 0:
+            logger.info(f"{filename} already exists. Skipping download.")
+            console.print(f"[bold green]{filename} already exists. Skipping download.[/bold green]")
+        else:
+            logger.warning(f"{filename} exists but is empty or corrupt. Redownloading...")
+            os.remove(filename)
+            return fetch_source(url, dest_dir)  # Recursive call to redownload
+    else:
         logger.info(f"Downloading {url}...")
         console.print(f"[bold cyan]Downloading {url}...[/bold cyan]")
         with Progress() as progress:
-            task = progress.add_task("[cyan]Downloading...[/cyan]", total=100)
-            def update_to(block_num=1, block_size=1, total_size=None):
-                progress.update(task, advance=block_num * block_size - progress.tasks[0].completed)
-            urllib.request.urlretrieve(url, filename, reporthook=update_to)
-    else:
-        logger.info(f"{filename} already exists. Skipping download.")
-        console.print(f"[bold green]{filename} already exists. Skipping download.[/bold green]")
+            task = progress.add_task(f"[cyan]{os.path.basename(url)}[/cyan]", total=100)
+            def update_progress(block_num, block_size, total_size):
+                if total_size > 0:
+                    progress.update(task, total=total_size, advance=block_num * block_size)
+            urllib.request.urlretrieve(url, filename, reporthook=update_progress)
     return filename
 
 def extract_tarball(tarball, dest_dir):
     logger.info(f"Extracting {tarball}...")
     console.print(f"[bold cyan]Extracting {tarball}...[/bold cyan]")
-    if tarball.endswith('.tar.xz'):
-        with tarfile.open(tarball, 'r:xz') as tar:
-            tar.extractall(path=dest_dir)
-    elif tarball.endswith('.tar.gz'):
-        with tarfile.open(tarball, 'r:gz') as tar:
-            tar.extractall(path=dest_dir)
-    else:
-        raise Exception(f"Unsupported archive format: {tarball}")
+    try:
+        if tarball.endswith('.tar.xz'):
+            with tarfile.open(tarball, 'r:xz') as tar:
+                tar.extractall(path=dest_dir)
+        elif tarball.endswith('.tar.gz'):
+            with tarfile.open(tarball, 'r:gz') as tar:
+                tar.extractall(path=dest_dir)
+        elif tarball.endswith('.tar.bz2'):
+            with tarfile.open(tarball, 'r:bz2') as tar:
+                tar.extractall(path=dest_dir)
+        else:
+            raise Exception(f"Unsupported archive format: {tarball}")
+    except tarfile.ReadError as e:
+        logger.error(f"Extraction failed for {tarball}: {str(e)}. Redownloading...")
+        os.remove(tarball)
+        return extract_tarball(fetch_source(tarball, dest_dir), dest_dir)  # Redownload and retry
 
-    extracted_dirs = [
-        os.path.join(dest_dir, d)
-        for d in os.listdir(dest_dir)
-        if os.path.isdir(os.path.join(dest_dir, d))
-    ]
-
+    extracted_dirs = [os.path.join(dest_dir, d) for d in os.listdir(dest_dir) if os.path.isdir(os.path.join(dest_dir, d))]
     if len(extracted_dirs) == 1:
         return extracted_dirs[0]
     elif len(extracted_dirs) > 1:
@@ -59,153 +83,316 @@ def extract_tarball(tarball, dest_dir):
         matching_dirs = [d for d in extracted_dirs if package_name in d]
         if matching_dirs:
             return matching_dirs[0]
-        else:
-            logger.warning(f"Multiple directories found. Using the first one: {extracted_dirs[0]}")
-            console.print(f"[bold yellow]Warning: Multiple directories found. Using the first one: {extracted_dirs[0]}[/bold yellow]")
-            return extracted_dirs[0]
-    else:
-        return dest_dir
+        logger.warning(f"Multiple directories found. Using: {extracted_dirs[0]}")
+        console.print(f"[bold yellow]Warning: Multiple directories found. Using: {extracted_dirs[0]}[/bold yellow]")
+        return extracted_dirs[0]
+    return dest_dir
 
-def build_package(src_dir, commands, stage):
+def build_package(src_dir, commands, stage, dry_run=False):
     logger.info(f"{stage.capitalize()} package in {src_dir}...")
     console.print(f"[bold cyan]{stage.capitalize()} package in {src_dir}...[/bold cyan]")
     for command in commands:
         logger.info(f"Running: {command}")
         console.print(f"[bold yellow]Running: {command}[/bold yellow]")
-        result = subprocess.run(command, shell=True, cwd=src_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            logger.error(f"Error: {result.stderr.decode()}")
-            console.print(f"[bold red]Error: {result.stderr.decode()}[/bold red]")
-            raise Exception(f"Command '{command}' failed.")
+        if not dry_run:
+            result = subprocess.run(command, shell=True, cwd=src_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if result.returncode != 0:
+                logger.error(f"Error: {result.stderr.decode()}")
+                console.print(f"[bold red]Error: {result.stderr.decode()}[/bold red]")
+                raise Exception(f"Command '{command}' failed.")
+        else:
+            console.print("[bold green][Dry Run] Skipped execution[/bold green]")
 
 def find_package_toml(package_name):
     for root, _, files in os.walk(SOURCES_BASE_DIR):
         for file in files:
             if file.endswith('.toml') and package_name in file:
                 return os.path.join(root, file)
-    raise Exception(f"Package '{package_name}' not found in {SOURCES_BASE_DIR}.")
+    return None
 
-def install_package(package_name):
+def is_package_installed_system(package_name):
+    # Strip version for broader matching (e.g., "thunar" from "thunar-4.20.2")
+    base_name = package_name.split('-')[0]
+
+    # Debian/Ubuntu/Mint (dpkg)
+    try:
+        result = subprocess.run(['dpkg', '-l', base_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0 and base_name in result.stdout:
+            logger.info(f"Detected {base_name} via dpkg")
+            return True
+    except FileNotFoundError:
+        pass
+
+    # Fedora/RHEL (rpm)
+    try:
+        result = subprocess.run(['rpm', '-q', base_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            logger.info(f"Detected {base_name} via rpm")
+            return True
+    except FileNotFoundError:
+        pass
+
+    # Arch (pacman)
+    try:
+        result = subprocess.run(['pacman', '-Qi', base_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            logger.info(f"Detected {base_name} via pacman")
+            return True
+    except FileNotFoundError:
+        pass
+
+    # LFS and fallback: Check /usr and /opt
+    for prefix in ["/usr", "/opt"]:
+        for path in [f"{prefix}/bin/{base_name}", f"{prefix}/lib/{base_name}.so", f"{prefix}/share/{base_name}"]:
+            if os.path.exists(path):
+                logger.info(f"Detected {base_name} in {path}")
+                return True
+
+    return False
+
+def get_installed_version(package_name):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT version FROM packages WHERE name = ?", (package_name,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def save_package_info(package_name, version, files):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO packages (name, version, files) VALUES (?, ?, ?)",
+              (package_name, version, ','.join(files)))
+    conn.commit()
+    conn.close()
+
+def check_conflicts(package_name, files):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, files FROM packages")
+    for installed_name, installed_files in c.fetchall():
+        if installed_name != package_name:
+            installed_files_list = installed_files.split(',')
+            conflicting_files = set(files) & set(installed_files_list)
+            if conflicting_files:
+                conn.close()
+                return f"Conflict with {installed_name}: {', '.join(conflicting_files)}"
+    conn.close()
+    return None
+
+def install_package(package_name, dry_run=False, dependency_tree=None, processed_deps=None):
+    if processed_deps is None:
+        processed_deps = set()
+
+    installed_version = get_installed_version(package_name)
+    system_installed = is_package_installed_system(package_name)
     toml_path = find_package_toml(package_name)
+
+    if (installed_version or system_installed) and not dry_run:
+        console.print(f"[bold green][x] Package '{package_name}' already installed.[/bold green]")
+        return True
+
+    if not toml_path:
+        console.print(f"[bold yellow][ ] Package '{package_name}' not found in sources.[/bold yellow]")
+        return False
+
     package_info = load_package_info(toml_path)
     package = package_info['package']
-    build = package_info['build']
+    build = package_info.get('build', {})
+    version = package.get('version', 'unknown')
 
-    tarball = fetch_source(package['src'][0], os.path.dirname(toml_path))
-    src_dir = extract_tarball(tarball, BUILD_DIR)
-    logger.info(f"Using source directory: {src_dir}")
-    console.print(f"[bold cyan]Using source directory: {src_dir}[/bold cyan]")
+    if 'dependencies' in package_info:
+        if dependency_tree is None:
+            dependency_tree = Tree(f"[bold cyan]Dependency Tree for {package_name}[/bold cyan]")
+        dep_branch = dependency_tree.add(f"[yellow]{package_name}[/yellow]")
+        for dep_name, dep_version in package_info['dependencies'].items():
+            if dep_name in processed_deps:
+                dep_branch.add(f"[green][x] {dep_name} ({dep_version}) - already processed[/green]")
+                continue
+            processed_deps.add(dep_name)
+            # Initially mark as not installed
+            dep_node = dep_branch.add(f"[magenta][ ] {dep_name} ({dep_version})[/magenta]")
+            console.print(f"[bold cyan]Checking dependency: {dep_name} ({dep_version})[/bold cyan]")
+            installed = install_package(dep_name, dry_run, dependency_tree, processed_deps)
+            # Update the node label based on installation status
+            if installed:
+                dep_node.label = f"[green][x] {dep_name} ({dep_version})[/green]"
+            else:
+                dep_node.label = f"[red][ ] {dep_name} ({dep_version}) - not installed[/red]"
 
-    if 'configure' in build:
-        build_package(src_dir, build['configure'], 'configuring')
-    if 'compile' in build:
-        build_package(src_dir, build['compile'], 'compiling')
-    if 'install' in build:
-        build_package(src_dir, build['install'], 'installing')
+    if not dry_run:
+        console.print(dependency_tree)
 
-    shutil.rmtree(src_dir)
-    os.remove(tarball)
+    if not (installed_version or system_installed):
+        tarballs = fetch_sources_parallel(package['src'], os.path.dirname(toml_path))
+        src_dir = extract_tarball(tarballs[0], BUILD_DIR)
 
-    logger.info(f"Package '{package_name}' installed successfully.")
-    console.print(Panel("[bold green]✔ Installation Complete![/bold green]", style="green"))
+        install_files = package_info.get('install', {}).get('files', [])
+        conflict = check_conflicts(package_name, [os.path.join(INSTALL_DIR, f.lstrip('/')) for f in install_files])
+        if conflict and not dry_run:
+            raise Exception(f"Installation aborted: {conflict}")
+
+        if 'configure' in build:
+            build_package(src_dir, build['configure'], 'configuring', dry_run)
+        if 'compile' in build:
+            build_package(src_dir, build['compile'], 'compiling', dry_run)
+        if 'install' in build:
+            build_package(src_dir, build['install'], 'installing', dry_run)
+
+        if not dry_run:
+            shutil.rmtree(src_dir)
+            for tarball in tarballs:
+                os.remove(tarball)
+            save_package_info(package_name, version, install_files)
+            logger.info(f"Package '{package_name}' installed successfully.")
+            console.print(Panel(f"[bold green][x] Package '{package_name}' installed![/bold green]", style="green"))
+        else:
+            console.print(Panel(f"[bold green][Dry Run] Package '{package_name}' would be installed[/bold green]", style="green"))
+    return True
 
 def search_packages(query):
-    logger.info(f"Searching for packages containing '{query}'...")
-    console.print(f"[bold cyan]Searching for packages containing '{query}'...[/bold cyan]")
+    logger.info(f"Searching for '{query}'...")
+    console.print(f"[bold cyan]Searching for '{query}'...[/bold cyan]")
     matches = []
     for root, _, files in os.walk(SOURCES_BASE_DIR):
         for file in files:
             if file.endswith('.toml') and query in file:
-                matches.append(file)
+                package_name = file.replace('.toml', '')
+                toml_path = find_package_toml(package_name)
+                if toml_path:  # Only include if found
+                    installed_version = get_installed_version(package_name)
+                    system_installed = is_package_installed_system(package_name)
+                    installed = installed_version is not None or system_installed
+                    logger.debug(f"Package {package_name}: installed_version={installed_version}, system_installed={system_installed}, installed={installed}")
+                    matches.append((package_name, installed, toml_path))
+    
     if matches:
         table = Table(title="Matching Packages")
+        table.add_column("Status", style="green")
         table.add_column("Package Name", style="cyan")
         table.add_column("Location", style="magenta")
-        for match in matches:
-            table.add_row(match, os.path.dirname(match))
+        for package_name, installed, toml_path in matches:
+            status = "[x]" if installed else "[ ]"
+            logger.debug(f"Setting status for {package_name} to {status}")
+            table.add_row(status, package_name, toml_path)
         console.print(table)
     else:
-        logger.warning("No matching packages found.")
         console.print("[bold yellow]No matching packages found.[/bold yellow]")
+
 
 def list_installed_packages():
     logger.info("Listing installed packages...")
     console.print("[bold cyan]Listing installed packages...[/bold cyan]")
-    installed_packages = []
-    for root, _, files in os.walk(INSTALL_DIR):
-        for file in files:
-            if file.endswith('.toml'):
-                installed_packages.append(file)
-    if installed_packages:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, version FROM packages")
+    installed = c.fetchall()
+    conn.close()
+    if installed:
         table = Table(title="Installed Packages")
+        table.add_column("Status", style="green")
         table.add_column("Package Name", style="cyan")
-        table.add_column("Location", style="magenta")
-        for package in installed_packages:
-            table.add_row(package, os.path.dirname(package))
+        table.add_column("Version", style="magenta")
+        for name, version in installed:
+            table.add_row("[x]", name, version)
         console.print(table)
     else:
-        logger.warning("No installed packages found.")
-        console.print("[bold yellow]No installed packages found.[/bold yellow]")
+        console.print("[bold yellow]No installed packages found in LXPKG database.[/bold yellow]")
 
-def remove_package(package_name):
-    logger.info(f"Removing package '{package_name}'...")
-    console.print(f"[bold cyan]Removing package '{package_name}'...[/bold cyan]")
-    toml_path = find_package_toml(package_name)
-    package_info = load_package_info(toml_path)
-    files_to_remove = package_info.get('install', {}).get('files', [])
-
-    removed_files = []
-    missing_files = []
+def remove_package(package_name, dry_run=False):
+    logger.info(f"Removing '{package_name}'...")
+    console.print(f"[bold cyan]Removing '{package_name}'...[/bold cyan]")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT files FROM packages WHERE name = ?", (package_name,))
+    result = c.fetchone()
+    if not result and not is_package_installed_system(package_name):
+        conn.close()
+        raise Exception(f"Package '{package_name}' not found.")
+    files_to_remove = result[0].split(',') if result else []
 
     for file in files_to_remove:
-        full_path = os.path.join(INSTALL_DIR, file.lstrip('/'))
-        if os.path.exists(full_path):
-            os.remove(full_path)
-            removed_files.append(full_path)
-            logger.info(f"Removed {full_path}")
-            console.print(f"[bold yellow]Removed {full_path}[/bold yellow]")
-        else:
-            missing_files.append(full_path)
-            logger.warning(f"File {full_path} does not exist.")
-            console.print(f"[bold red]File {full_path} does not exist.[/bold red]")
+        if os.path.exists(file) and not dry_run:
+            os.remove(file)
+            console.print(f"[bold yellow]Removed {file}[/bold yellow]")
+        elif dry_run:
+            console.print(f"[bold green][Dry Run] Would remove {file}[/bold green]")
 
-    if removed_files:
-        logger.info(f"Package '{package_name}' removed successfully.")
-        console.print(Panel(f"[bold green]✔ Package '{package_name}' removed successfully.[/bold green]", style="green"))
-    if missing_files:
-        logger.warning("Some files were not found and could not be removed.")
-        console.print(Panel(f"[bold red]Warning: Some files were not found and could not be removed.[/bold red]", style="red"))
+    if not dry_run and result:
+        c.execute("DELETE FROM packages WHERE name = ?", (package_name,))
+        conn.commit()
+        console.print(Panel(f"[bold green]✔ Package '{package_name}' removed![/bold green]", style="green"))
+    else:
+        console.print(Panel(f"[bold green][Dry Run] Package '{package_name}' would be removed[/bold green]", style="green"))
+    conn.close()
 
-def update_package(package_name):
-    logger.info(f"Updating package '{package_name}'...")
-    console.print(f"[bold cyan]Updating package '{package_name}'...[/bold cyan]")
-    remove_package(package_name)
-    install_package(package_name)
-    logger.info(f"Package '{package_name}' updated successfully.")
-    console.print(Panel(f"[bold green]✔ Package '{package_name}' updated successfully.[/bold green]", style="green"))
+def update_package(package_name, dry_run=False):
+    logger.info(f"Updating '{package_name}'...")
+    console.print(f"[bold cyan]Updating '{package_name}'...[/bold cyan]")
+    remove_package(package_name, dry_run)
+    install_package(package_name, dry_run)
+    if not dry_run:
+        console.print(Panel(f"[bold green]✔ Package '{package_name}' updated![/bold green]", style="green"))
+
+def update_all(dry_run=False):
+    logger.info("Updating all installed packages...")
+    console.print("[bold cyan]Updating all installed packages...[/bold cyan]")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name FROM packages")
+    packages = [row[0] for row in c.fetchall()]
+    conn.close()
+    for package in packages:
+        update_package(package, dry_run)
+    if not dry_run:
+        console.print(Panel("[bold green]✔ All packages updated![/bold green]", style="green"))
+
+def clean_build_dir():
+    logger.info("Cleaning build directory...")
+    console.print("[bold cyan]Cleaning build directory...[/bold cyan]")
+    if os.path.exists(BUILD_DIR):
+        shutil.rmtree(BUILD_DIR)
+        os.makedirs(BUILD_DIR, exist_ok=True)
+        console.print("[bold green]✔ Build directory cleaned![/bold green]")
+    else:
+        console.print("[bold yellow]Build directory does not exist.[/bold yellow]")
 
 def main():
-    parser = argparse.ArgumentParser(description='LXPKG - Simple Package Manager')
-    parser.add_argument('command', choices=['install', 'search', 'remove', 'update', 'list'], help='Command to run')
-    parser.add_argument('package', nargs='?', help='Name of the package')
+    parser = argparse.ArgumentParser(description='LXPKG - Advanced Package Manager')
+    parser.add_argument('command', choices=['install', 'search', 'remove', 'update', 'update-all', 'list', 'clean'], help='Command to run')
+    parser.add_argument('package', nargs='?', help='Name of the package (not required for update-all, list, clean)')
+    parser.add_argument('--dry-run', action='store_true', help='Simulate actions without executing them')
 
     args = parser.parse_args()
 
+    init_db()
+
     try:
         if args.command == 'install':
-            install_package(args.package)
+            if not args.package:
+                raise Exception("Package name required for install.")
+            install_package(args.package, args.dry_run)
         elif args.command == 'search':
+            if not args.package:
+                raise Exception("Query required for search.")
             search_packages(args.package)
         elif args.command == 'remove':
-            remove_package(args.package)
+            if not args.package:
+                raise Exception("Package name required for remove.")
+            remove_package(args.package, args.dry_run)
         elif args.command == 'update':
-            update_package(args.package)
+            if not args.package:
+                raise Exception("Package name required for update.")
+            update_package(args.package, args.dry_run)
+        elif args.command == 'update-all':
+            update_all(args.dry_run)
         elif args.command == 'list':
             list_installed_packages()
+        elif args.command == 'clean':
+            clean_build_dir()
     except Exception as e:
         logger.error(f"Error: {e}")
         console.print(Panel(f"[bold red]Error: {e}[/bold red]", style="red"))
 
 if __name__ == "__main__":
     main()
-
