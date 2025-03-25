@@ -52,5 +52,5 @@ curl -fsSL https://raw.githubusercontent.com/LearnixOS/lxpkg/main/install.sh | b
 
 
 
-# ‎ <sup><sub><samp>STILL EARLY IN DEVELOPMENT!</samp></sub></sup>
-## 𝗗𝗼𝗻'𝘁 𝘁𝗿𝘆 𝘁𝗵𝗶𝘀 𝗼𝗻 𝗮 𝗽𝗿𝗼𝗱𝘂𝗰𝘁𝗶𝗼𝗻 𝗺𝗮𝗰𝗵𝗶𝗻𝗲 𝘆𝗲𝘁
+## ‎ <sup><sub><samp>STILL EARLY IN DEVELOPMENT!</samp></sub></sup>
+# 𝗗𝗼𝗻'𝘁 𝘁𝗿𝘆 𝘁𝗵𝗶𝘀 𝗼𝗻 𝗮 𝗽𝗿𝗼𝗱𝘂𝗰𝘁𝗶𝗼𝗻 𝗺𝗮𝗰𝗵𝗶𝗻𝗲 𝘆𝗲𝘁
