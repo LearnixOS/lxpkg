@@ -16,7 +16,7 @@
 
 <div align="center">
 
-## ⚙️ 𝙁𝙚𝙖𝙩𝙪𝙧𝙚𝙨
+## ⚙️ 𝗙𝗲𝗮𝘁𝘂𝗿𝗲𝘀
 
 <div align="center">
 
