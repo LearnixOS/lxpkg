@@ -34,15 +34,6 @@
 
 <div align="center">
 
-
-<div style="display: flex; align-items: center; margin-bottom: 40px;">
-  <div style="flex: 1; padding-right: 20px;">
-    <p><strong>🚀 Resource Efficiency</strong></p>
-    <p>Optimized for performance and minimal resource usage.</p>
-<h1>
-  
-<div align="center">
-
 ### 𝙄𝙣𝙨𝙩𝙖𝙡𝙡𝙖𝙩𝙞𝙤𝙣 🍃
 
 ```
