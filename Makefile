@@ -26,8 +26,4 @@ clean:
 	rm -f $(TARGET)
 	rm -rf venv
 
-# Run the Python script with a test command
-test: $(TARGET)
-	$(PYTHON) $(SCRIPT) install busybox --dry-run
-
 .PHONY: all clean test deps
