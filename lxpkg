@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+import os
+import sys
+import argparse
+import subprocess
+import urllib.request
+import tarfile
+import shutil
+import toml
+import hashlib
+import concurrent.futures
+import time
+import json
+import logging
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Any, Tuple, Set
+from rich.console import Console
+from rich.theme import Theme
+
+# Get the original user's home directory (not root's)
+ORIGINAL_USER_HOME = os.path.expanduser("~") if os.geteuid() != 0 else os.environ.get("SUDO_USER_HOME", "/home/user")
+SOURCES_BASE_DIR = os.path.join(ORIGINAL_USER_HOME, "sources")
+BUILD_DIR = os.path.join(ORIGINAL_USER_HOME, "sources", "build")
+INSTALL_DIR = os.path.join(ORIGINAL_USER_HOME, "sources", "install")
+LOG_DIR = os.path.join(ORIGINAL_USER_HOME, ".config/lxpkg", "logs")
+
+# Configuration paths
+CONFIG_DIR = os.path.join(ORIGINAL_USER_HOME, ".config/lxpkg")
+CACHE_DIR = os.path.join(CONFIG_DIR, "cache")
+DB_PATH = os.path.join(CONFIG_DIR, "installed.json")
+
+# Custom theme for rich console (htop-like colors)
+custom_theme = Theme({
+    "info": "cyan",
+    "warning": "yellow",
+    "error": "bold red",
+    "success": "bold green",
+    "header": "bold magenta",
+    "package": "bold white",
+})
+console = Console(theme=custom_theme)
+
+# Configure logging to file only
+logger = logging.getLogger('lxpkg')
+logger.handlers = []
+logger.setLevel(logging.DEBUG)  # Set to DEBUG for detailed logging
+file_handler = logging.FileHandler(os.path.join(LOG_DIR, "lxpkg.log"))
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# Ensure all directories exist
+for directory in [CONFIG_DIR, SOURCES_BASE_DIR, BUILD_DIR, INSTALL_DIR, CACHE_DIR, LOG_DIR]:
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except PermissionError as e:
+        console.print(f"[error]Permission denied creating {directory}. Adjust paths.[/error]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[error]Error creating {directory}: {e}[/error]")
+        sys.exit(1)
+
+# Check if SOURCES_BASE_DIR is empty and clone if it is
+if not os.listdir(SOURCES_BASE_DIR):
+    repo_url = "https://github.com/LearnixOS/lxos-repo.git"  # Replace with your actual repo
+    console.print("[info]Sources empty, syncing...[/info]")
+    logger.info(f"Cloning {repo_url} into {SOURCES_BASE_DIR}")
+    try:
+        result = subprocess.run(
+            ["git", "clone", repo_url, SOURCES_BASE_DIR],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        console.print("[success]Sources synced[/success]")
+        logger.info("Repository cloned successfully")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[error]Sync failed: {e.stderr}[/error]")
+        logger.error(f"Failed to clone repository: {e.stderr}")
+        sys.exit(1)
+    except FileNotFoundError:
+        console.print("[error]Git not found. Please install git.[/error]")
+        logger.error("Git not found")
+        sys.exit(1)
+
+@dataclass
+class PackageInfo:
+    name: str
+    version: str
+    description: str
+    url: str
+    source_urls: List[str]
+    source_type: str
+    dependencies: List[str]
+    checksums: Dict[str, str]
+    configure_commands: List[str]
+    compile_commands: List[str]
+    compile_with_x11_commands: List[str]
+    install_commands: List[str]
+    installed_files: List[str]
+    post_install_commands: List[str]
+
+class DatabaseManager:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.ensure_db_exists()
+    
+    def ensure_db_exists(self):
+        if not os.path.exists(self.db_path):
+            with open(self.db_path, 'w') as f:
+                json.dump({"packages": {}, "last_update": 0}, f)
+    
+    def get_installed_packages(self) -> Dict[str, Dict[str, Any]]:
+        with open(self.db_path, 'r') as f:
+            return json.load(f).get("packages", {})
+    
+    def is_package_installed(self, package_name: str) -> bool:
+        packages = self.get_installed_packages()
+        return package_name in packages
+    
+    def get_package_info(self, package_name: str) -> Optional[Dict[str, Any]]:
+        packages = self.get_installed_packages()
+        return packages.get(package_name)
+    
+    def add_package(self, package_name: str, version: str, files: List[str], 
+                    install_date: float, dependencies: List[str]) -> None:
+        with open(self.db_path, 'r') as f:
+            db = json.load(f)
+        
+        db["packages"][package_name] = {
+            "version": version,
+            "files": files,
+            "install_date": install_date,
+            "dependencies": dependencies
+        }
+        
+        with open(self.db_path, 'w') as f:
+            json.dump(db, f, indent=2)
+    
+    def remove_package(self, package_name: str) -> bool:
+        with open(self.db_path, 'r') as f:
+            db = json.load(f)
+        
+        if package_name in db["packages"]:
+            del db["packages"][package_name]
+            with open(self.db_path, 'w') as f:
+                json.dump(db, f, indent=2)
+            return True
+        return False
+    
+    def update_last_update_time(self) -> None:
+        with open(self.db_path, 'r') as f:
+            db = json.load(f)
+        
+        db["last_update"] = time.time()
+        
+        with open(self.db_path, 'w') as f:
+            json.dump(db, f, indent=2)
+    
+    def get_last_update_time(self) -> float:
+        with open(self.db_path, 'r') as f:
+            return json.load(f).get("last_update", 0)
+
+class PackageManager:
+    def __init__(self):
+        self.db = DatabaseManager(DB_PATH)
+        self.load_config()
+        self.parallel_jobs = 1
+        self.keep_build_files = False
+        self.verify_checksums = True
+        self.network_timeout = 30
+        self.network_retries = 3
+        self.sources_base_dir = SOURCES_BASE_DIR
+
+    def load_config(self):
+        config_file = os.path.join(CONFIG_DIR, "config.toml")
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                config = toml.load(f)
+            
+            global INSTALL_DIR, BUILD_DIR
+            INSTALL_DIR = config.get("paths", {}).get("install_dir", INSTALL_DIR)
+            BUILD_DIR = config.get("paths", {}).get("build_dir", BUILD_DIR)
+            
+            build_config = config.get("build", {})
+            self.parallel_jobs = build_config.get("parallel_jobs", os.cpu_count() or 1)
+            self.keep_build_files = build_config.get("keep_build_files", False)
+            self.verify_checksums = build_config.get("verify_checksums", True)
+            
+            network_config = config.get("network", {})
+            self.network_timeout = network_config.get("timeout", 30)
+            self.network_retries = config.get("retries", 3)
+            
+            for directory in [INSTALL_DIR, BUILD_DIR]:
+                try:
+                    os.makedirs(directory, exist_ok=True)
+                except PermissionError as e:
+                    console.print(f"[error]Permission denied creating {directory}. Adjust paths.[/error]")
+                    sys.exit(1)
+
+    def load_package_info(self, package_name: str) -> Optional[PackageInfo]:
+        """Load package info from a .toml file in SOURCES_BASE_DIR with new format"""
+        logger.info(f"Searching for package '{package_name}' in {self.sources_base_dir}")
+        for root, _, files in os.walk(self.sources_base_dir):
+            logger.debug(f"Checking directory: {root}")
+            for file in files:
+                if file.endswith('.toml'):
+                    full_path = os.path.join(root, file)
+                    logger.debug(f"Found .toml file: {full_path}")
+                    try:
+                        with open(full_path, 'r') as f:
+                            data = toml.load(f)
+                            # Ensure 'package' is a dictionary
+                            pkg_data = data.get("package")
+                            if not isinstance(pkg_data, dict):
+                                logger.error(f"Invalid package section in {full_path}: expected dict, got {type(pkg_data)}")
+                                continue
+                            # Use base name from filename if 'name' is missing
+                            file_base_name = file.replace('.toml', '').split('-')[0].lower()
+                            pkg_name = pkg_data.get("name", file_base_name).lower()
+                            logger.debug(f"Package name: {pkg_name}, File base name: {file_base_name}")
+                            if package_name.lower() in pkg_name or package_name.lower() in file_base_name:
+                                logger.info(f"Match found: {pkg_name} in {full_path}")
+                                build_data = data.get("build", {})
+                                build_with_x11_data = data.get("build_with_x11", {})
+                                # Handle dependencies
+                                deps = data.get("dependencies", {})
+                                if isinstance(deps, dict):
+                                    dependencies = [f"{key}-{value}" if value != "*" else key for key, value in deps.items()]
+                                else:
+                                    dependencies = deps if isinstance(deps, list) else []
+                                # Handle install and post_install sections
+                                install_data = data.get("install", {})
+                                install_commands = install_data.get("commands", []) if isinstance(install_data, dict) else install_data
+                                post_install_data = data.get("post_install", {})
+                                post_install_commands = post_install_data.get("commands", []) if isinstance(post_install_data, dict) else post_install_data
+                                return PackageInfo(
+                                    name=pkg_name,
+                                    version=pkg_data.get("version", "unknown"),
+                                    description=pkg_data.get("description", ""),
+                                    url=pkg_data.get("url", ""),
+                                    source_urls=pkg_data.get("src", []),
+                                    source_type=pkg_data.get("type", "curl"),
+                                    dependencies=dependencies,
+                                    checksums=pkg_data.get("checksums", {}),
+                                    configure_commands=build_data.get("configure", []),
+                                    compile_commands=build_data.get("compile", []),
+                                    compile_with_x11_commands=build_with_x11_data.get("compile", []),
+                                    install_commands=install_commands,
+                                    installed_files=pkg_data.get("installed_files", []),
+                                    post_install_commands=post_install_commands
+                                )
+                    except toml.TomlDecodeError as e:
+                        logger.error(f"Failed to parse {full_path}: {e}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Unexpected error parsing {full_path}: {e}")
+                        continue
+        logger.warning(f"No match for '{package_name}' in {self.sources_base_dir}")
+        return None
+
+    def sync_sources(self) -> None:
+        """Sync sources by deleting old files and cloning the repository"""
+        console.print("[header]Syncing Sources...[/header]")
+        logger.info(f"Clearing {SOURCES_BASE_DIR}")
+        for item in os.listdir(SOURCES_BASE_DIR):
+            item_path = os.path.join(SOURCES_BASE_DIR, item)
+            try:
+                if os.path.isfile(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception as e:
+                console.print(f"[error]Failed to clear sources: {e}[/error]")
+                logger.error(f"Failed to remove {item_path}: {e}")
+                sys.exit(1)
+
+        repo_url = "https://github.com/LearnixOS/lxos-repo.git"  # Replace with your actual repo
+        logger.info(f"Cloning {repo_url} into {SOURCES_BASE_DIR}")
+        try:
+            result = subprocess.run(
+                ["git", "clone", repo_url, SOURCES_BASE_DIR],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            console.print("[success]Sources synced successfully[/success]")
+            logger.info("Repository cloned successfully")
+            contents = os.listdir(SOURCES_BASE_DIR)
+            logger.info(f"Post-sync contents of {SOURCES_BASE_DIR}: {contents}")
+        except subprocess.CalledProcessError as e:
+            console.print(f"[error]Sync failed: {e.stderr}[/error]")
+            logger.error(f"Failed to clone repository: {e.stderr}")
+            sys.exit(1)
+        except FileNotFoundError:
+            console.print("[error]Git not found. Please install git.[/error]")
+            logger.error("Git not found")
+            sys.exit(1)
+
+    def search_packages(self, query: str) -> None:
+        """Search for available packages with htop-like UI"""
+        console.print(f"[header]Searching for '{query}'...[/header]")
+        matches = set()  # Use set to avoid duplicates
+        logger.info(f"Searching for '{query}' in {self.sources_base_dir}")
+        for root, _, files in os.walk(self.sources_base_dir):
+            logger.debug(f"Checking directory: {root}")
+            for file in files:
+                if file.endswith('.toml'):
+                    full_path = os.path.join(root, file)
+                    logger.debug(f"Found .toml file: {full_path}")
+                    try:
+                        with open(full_path, 'r') as f:
+                            data = toml.load(f)
+                            pkg_data = data.get("package")
+                            if not isinstance(pkg_data, dict):
+                                logger.error(f"Invalid package section in {full_path}: expected dict, got {type(pkg_data)}")
+                                continue
+                            # Use base name from filename if 'name' is missing
+                            file_base_name = file.replace('.toml', '').split('-')[0].lower()
+                            pkg_name = pkg_data.get("name", file_base_name).lower()
+                            file_name = file.replace('.toml', '').lower()
+                            query_lower = query.lower()
+                            logger.debug(f"Checking match: query='{query_lower}', pkg_name='{pkg_name}', file_name='{file_name}', file_base_name='{file_base_name}'")
+                            if query_lower in pkg_name or query_lower in file_name or query_lower in file_base_name:
+                                matches.add(pkg_name if pkg_name else file_base_name)
+                                logger.info(f"Matched '{query}' with package name: {pkg_name}, file_name: {file_name}, file_base_name: {file_base_name} in {full_path}")
+                    except toml.TomlDecodeError as e:
+                        logger.error(f"Failed to parse {full_path}: {e}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Unexpected error parsing {full_path}: {e}")
+                        continue
+
+        if matches:
+            console.print(f"[success]Found packages:[/success]")
+            for package in sorted(matches):
+                console.print(f"  - [package]{package}[/package]")
+        else:
+            console.print(f"[warning]No packages found[/warning]")
+            logger.warning(f"No packages matched '{query}' in {self.sources_base_dir}")
+
+    def install_package(self, package_name: str, use_x11: bool = False) -> None:
+        """Install a package from SOURCES_BASE_DIR"""
+        # Check for sudo if installing
+        if os.geteuid() != 0 and args.command == 'install':
+            console.print("[error]Please run with sudo for installation commands.[/error]")
+            sys.exit(1)
+
+        console.print(f"[header]Installing '{package_name}'...[/header]")
+        pkg_info = self.load_package_info(package_name)
+        if not pkg_info:
+            console.print(f"[error]Package '{package_name}' not found[/error]")
+            return
+
+        if self.db.is_package_installed(package_name):
+            console.print(f"[warning]'{package_name}' already installed[/warning]")
+            return
+
+        # Check dependencies
+        for dep in pkg_info.dependencies:
+            if not self.db.is_package_installed(dep):
+                console.print(f"[info]Installing dependency: {dep}[/info]")
+                self.install_package(dep, use_x11)
+
+        build_dir = os.path.join(BUILD_DIR, f"{package_name}-{pkg_info.version}")
+        os.makedirs(build_dir, exist_ok=True)
+        installed_files = []
+
+        # Handle source type
+        if pkg_info.source_type == "script":
+            # For script type, directly execute install commands without cloning or downloading
+            pass
+        elif pkg_info.source_type == "git" or (pkg_info.source_urls and pkg_info.source_urls[0].endswith('.git')):
+            repo_url = pkg_info.source_urls[0]
+            console.print(f"[info]Cloning {repo_url}...[/info]")
+            try:
+                subprocess.run(["git", "clone", repo_url, build_dir], check=True)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[error]Clone failed: {e}[/error]")
+                shutil.rmtree(build_dir)
+                return
+        elif pkg_info.source_type == "curl":
+            for url in pkg_info.source_urls:
+                file_name = url.split('/')[-1]
+                file_path = os.path.join(build_dir, file_name)
+                console.print(f"[info]Downloading {file_name}...[/info]")
+                try:
+                    urllib.request.urlretrieve(url, file_path)
+                except Exception as e:
+                    console.print(f"[error]Download failed: {e}[/error]")
+                    shutil.rmtree(build_dir)
+                    return
+
+                if self.verify_checksums and url in pkg_info.checksums:
+                    expected_checksum = pkg_info.checksums[url]
+                    with open(file_path, 'rb') as f:
+                        file_hash = hashlib.sha256(f.read()).hexdigest()
+                    if file_hash != expected_checksum:
+                        console.print(f"[error]Checksum mismatch for {file_name}[/error]")
+                        shutil.rmtree(build_dir)
+                        return
+
+                if file_name.endswith(('.tar.gz', '.tgz', '.tar.bz2', '.tbz', '.tar', '.tar.xz')):
+                    try:
+                        with tarfile.open(file_path, 'r:*') as tar:
+                            tar.extractall(build_dir)
+                    except Exception as e:
+                        console.print(f"[error]Extraction failed: {e}[/error]")
+                        shutil.rmtree(build_dir)
+                        return
+
+        # Find the extracted directory (if tarball)
+        extracted_dir = build_dir
+        if pkg_info.source_type != "script":
+            for item in os.listdir(build_dir):
+                item_path = os.path.join(build_dir, item)
+                if os.path.isdir(item_path) and item != "__MACOSX":
+                    extracted_dir = item_path
+                    break
+            os.chdir(extracted_dir)
+
+        for cmd in pkg_info.configure_commands:
+            console.print(f"[info]Configuring: {cmd}...[/info]")
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[error]Configure failed: {e}[/error]")
+                shutil.rmtree(build_dir)
+                return
+
+        compile_commands = pkg_info.compile_with_x11_commands if use_x11 and pkg_info.compile_with_x11_commands else pkg_info.compile_commands
+        for cmd in compile_commands:
+            console.print(f"[info]Compiling: {cmd}...[/info]")
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[error]Compile failed: {e}[/error]")
+                shutil.rmtree(build_dir)
+                return
+
+        for cmd in pkg_info.install_commands:
+            console.print(f"[info]Installing: {cmd}...[/info]")
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[error]Install failed: {e}[/error]")
+                shutil.rmtree(build_dir)
+                return
+
+        for root, _, files in os.walk(INSTALL_DIR):
+            for file in files:
+                installed_files.append(os.path.join(root, file))
+
+        for cmd in pkg_info.post_install_commands:
+            console.print(f"[info]Post-install: {cmd}...[/info]")
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[error]Post-install failed: {e}[/error]")
+                shutil.rmtree(build_dir)
+                return
+
+        self.db.add_package(package_name, pkg_info.version, installed_files, time.time(), pkg_info.dependencies)
+        console.print(f"[success]'{package_name}' installed successfully[/success]")
+
+        if not self.keep_build_files:
+            shutil.rmtree(build_dir)
+
+    def remove_package(self, package_name: str) -> None:
+        """Remove a package with htop-like UI"""
+        console.print(f"[header]Removing '{package_name}'...[/header]")
+        if self.db.remove_package(package_name):
+            console.print(f"[success]Package removed successfully[/success]")
+        else:
+            console.print(f"[warning]Package not found[/warning]")
+
+    def update_package(self, package_name: str) -> None:
+        """Update a package (placeholder with htop-like UI)"""
+        console.print(f"[header]Updating '{package_name}'...[/header]")
+        console.print(f"[info]Update not implemented yet[/info]")
+
+    def list_installed(self) -> None:
+        """List installed packages with htop-like UI"""
+        console.print("[header]Installed Packages:[/header]")
+        packages = self.db.get_installed_packages()
+        if packages:
+            for name, info in packages.items():
+                version = info.get("version", "unknown")
+                console.print(f"  - [package]{name}[/package] (v{version})")
+        else:
+            console.print(f"[warning]No packages installed[/warning]")
+
+def main():
+    parser = argparse.ArgumentParser(description='LXPKG - Simple Package Manager')
+    parser.add_argument('command', choices=['install', 'search', 'remove', 'update', 'list', 'sync'],
+                        help='Command to run')
+    parser.add_argument('package', nargs='?', help='Name of the package')
+    parser.add_argument('--with-x11', action='store_true', help='Build with X11 features if available')
+
+    global args
+    args = parser.parse_args()
+
+    pkg_manager = PackageManager()
+
+    try:
+        if args.command == 'install':
+            if not args.package:
+                console.print("[error]Package name required[/error]")
+                sys.exit(1)
+            pkg_manager.install_package(args.package, use_x11=args.with_x11)
+        elif args.command == 'search':
+            if not args.package:
+                console.print("[error]Search query required[/error]")
+                sys.exit(1)
+            pkg_manager.search_packages(args.package)
+        elif args.command == 'remove':
+            if not args.package:
+                console.print("[error]Package name required[/error]")
+                sys.exit(1)
+            pkg_manager.remove_package(args.package)
+        elif args.command == 'update':
+            if not args.package:
+                console.print("[error]Package name required[/error]")
+                sys.exit(1)
+            pkg_manager.update_package(args.package)
+        elif args.command == 'list':
+            pkg_manager.list_installed()
+        elif args.command == 'sync':
+            if args.package:
+                console.print("[warning]'sync' does not take a package[/warning]")
+            pkg_manager.sync_sources()
+    except Exception as e:
+        console.print(f"[error]Error: {str(e)}[/error]")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
