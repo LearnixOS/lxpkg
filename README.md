@@ -115,12 +115,12 @@ chmod +x build
 # dependencies
 echo "ncurses" > depends
 ```
-
+```bash
 # checksums (after downloading)
 wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
 sha256sum htop-3.3.0.tar.xz | awk '{print $1}' > checksums
 rm htop-3.3.0.tar.xz
-
+```
     Install the package:
 
 ```bash
