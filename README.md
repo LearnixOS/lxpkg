@@ -1,30 +1,35 @@
-# LXPKG - Independent Source-Based Linux Package Manager
+LXPKG - Independent Source-Based Linux Package Manager
+⚠️ Alpha Stage Warning
 
-## ⚠️ Alpha Stage Warning
-LXPKG is currently in alpha. Expect bugs, incomplete features, and occasional breakage. If you're comfortable testing early-stage software and reporting issues, your help would be appreciated!
+LXPKG is in alpha. Expect bugs, incomplete features, and occasional breakage. If you're comfortable testing early-stage software and reporting issues, your help is appreciated!
+Overview
 
-## Overview
-LXPKG is a lightweight, source-based package manager designed for Linux users who prefer compiling software from source. Inspired by KISS Linux but designed to work across multiple distributions, LXPKG provides a simple way to manage software builds while maintaining control over your system.
+LXPKG is a lightweight, source-based package manager for Linux users who prefer compiling software from source. Inspired by KISS Linux, it’s designed to work across multiple distributions, providing a simple and transparent way to manage software builds.
+Features
 
-## Features
-- **Minimal Dependencies**: Written in POSIX shell (`/bin/sh`) with no external language requirements
-- **Source-Based**: Downloads and compiles packages from source
-- **Flexible**: Works across multiple Linux distributions
-- **Transparent**: Easy to understand and modify since it's just shell scripts
-- **Lightweight**: No daemons or background processes
+    Minimal Dependencies: Written in POSIX shell (/bin/sh) with no external language requirements.
 
-## Supported Distributions
-- **Primary Development Platform**: Linux Mint
-- **Known to Work On**: Ubuntu, Debian, Arch Linux, Fedora
-- **Should Work On**: Most distributions with standard GNU toolchains
+    Source-Based: Downloads and compiles packages from source.
 
-## Installation
+    Flexible: Works across multiple Linux distributions.
 
-### Quick Start
-```bash
+    Transparent: Easy to understand and modify as it's just shell scripts.
+
+    Lightweight: No daemons or background processes.
+
+Supported Distributions
+
+    Primary Development Platform: Linux Mint.
+
+    Tested On: Ubuntu, Debian, Arch Linux, Fedora.
+
+    Expected Compatibility: Most distributions with standard GNU toolchains.
+
+Installation
+Quick Start
+
 # Clone the repository
 git clone https://github.com/learnixOS/repo.git /usr/src/lxpkg/repo
-```
 
 # Install the main script
 sudo cp /usr/src/lxpkg/repo/lxpkg /usr/bin/lxpkg
@@ -35,27 +40,23 @@ lxpkg v
 
 Dependencies
 
-LXPKG requires basic build tools. Install these first:
-
+Ensure basic build tools are installed:
 Debian/Ubuntu/Mint:
-```bash
+
 sudo apt update
 sudo apt install gcc make pkg-config aria2 tar gzip xz-utils zstd b3sum ncurses-dev git
-```
 
 Arch Linux:
-```bash
+
 sudo pacman -S gcc make pkgconf aria2 tar gzip xz zstd blake3 ncurses git
-```
 
 Fedora:
-```bash
+
 sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel git
-```
 
 Usage
 Basic Commands
-```bash
+
 # Search for packages
 lxpkg s <query>
 
@@ -73,32 +74,26 @@ lxpkg u
 
 # Upgrade installed packages
 lxpkg U
-```
 
-Package Creation Example (htop)
+Package Creation Example: htop
 
-Here's how to create a package definition for htop:
+    Create the package directory:
 
-    Create package directory:
-
-```bash
 mkdir -p /usr/src/lxpkg/repo/extra/htop
 cd /usr/src/lxpkg/repo/extra/htop
-```
 
-    Create package files:
+Define package files:
 
-```bash
+    Sources:
 
-# sources file
 echo "https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz" > sources
-```
-```bash
-# version file
+
+Version:
+
 echo "3.3.0 1" > version
-```
-```bash
-# build script
+
+Build Script:
+
 cat > build << 'EOF'
 #!/bin/sh
 set -e
@@ -106,73 +101,68 @@ dest="$1"
 ./configure --prefix=/usr --enable-unicode --enable-cgroup
 make
 make install DESTDIR="$dest"
-```
-
 EOF
 chmod +x build
 
-```bash
-# dependencies
+Dependencies:
+
 echo "ncurses" > depends
-```
-```bash
-# checksums (after downloading)
-wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
-sha256sum htop-3.3.0.tar.xz | awk '{print $1}' > checksums
-rm htop-3.3.0.tar.xz
-```
+
+Checksums:
+
+        wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
+        sha256sum htop-3.3.0.tar.xz | awk '{print $1}' > checksums
+        rm htop-3.3.0.tar.xz
 
 Technical Details
 Package Structure
 
-Each package lives in /usr/src/lxpkg/repo/<category>/<package>/ with these files:
+Each package resides in /usr/src/lxpkg/repo/<category>/<package>/ and includes:
 
-    sources: Download URL(s)
+    sources: Download URL(s).
 
-    version: Package version and release
+    version: Package version and release.
 
-    build: Build script (optional)
+    build: Build script (optional).
 
-    depends: Runtime dependencies
+    depends: Runtime dependencies.
 
-    checksums: Source file verification hashes
+    checksums: Source file verification hashes.
 
 Database Structure
 
-    Installed packages are tracked in /var/db/lxpkg/installed/
+Installed packages are tracked in /var/db/lxpkg/installed/, each containing:
 
-    Each installed package has:
+    manifest: List of installed files.
 
-        manifest: List of installed files
-
-        version: Installed version and release
+    version: Installed version and release.
 
 Contributing
 
-LXPKG is a community project. We welcome contributions in these areas:
+LXPKG is a community project. Contributions are welcome in the following areas:
 
-    Bug fixes (especially edge cases in shell script handling)
+    Bug fixes (especially shell script edge cases).
 
-    Additional build system support
+    Support for additional build systems.
 
-    Improved dependency resolution
+    Enhanced dependency resolution.
 
-    Documentation improvements
+    Documentation improvements.
 
-    Testing on different distributions
+    Testing across distributions.
 
-To contribute:
+Contribution Process
 
-    Fork the repository
+    Fork the repository.
 
-    Create a feature branch
+    Create a feature branch.
 
-    Submit a pull request
+    Submit a pull request.
 
 Known Issues
 
-    Limited dependency resolution (basic ldd-based checking only)
+    Limited dependency resolution (basic ldd-based checking only).
 
-    No package signing support yet
+    No package signing support yet.
 
-    Some edge cases with filenames containing special characters
+    Issues with filenames containing special characters.
