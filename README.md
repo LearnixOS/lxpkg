@@ -30,6 +30,7 @@ LXPKG is a lightweight, source-based package manager designed for Linux users wh
 ```bash
 # Clone the repository
 git clone https://github.com/learnixOS/repo.git /usr/src/lxpkg/repo
+```
 
 # Install the main script
 sudo cp /usr/src/lxpkg/repo/lxpkg /usr/bin/lxpkg
