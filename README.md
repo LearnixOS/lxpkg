@@ -10,7 +10,7 @@
 
 <div align="center">
 
-## ⚠️ Alpha Stage Warning
+## ⚠️ Alpha Stage Warning ⚠️
 
 <div align="left">
 
