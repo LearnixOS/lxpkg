@@ -92,10 +92,12 @@ cd /usr/src/lxpkg/repo/extra/htop
 
 # sources file
 echo "https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz" > sources
-
+```
+```bash
 # version file
 echo "3.3.0 1" > version
-
+```
+```bash
 # build script
 cat > build << 'EOF'
 #!/bin/sh
@@ -104,11 +106,15 @@ dest="$1"
 ./configure --prefix=/usr --enable-unicode --enable-cgroup
 make
 make install DESTDIR="$dest"
+```
+
 EOF
 chmod +x build
 
+```bash
 # dependencies
 echo "ncurses" > depends
+```
 
 # checksums (after downloading)
 wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
