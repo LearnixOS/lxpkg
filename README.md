@@ -63,26 +63,28 @@ sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel 
 
 ## Usage
 
-### Basic Commands
+### Commands
 
 ```bash
-# Search for packages
-lxpkg s <query>
-
-# Install a package
-lxpkg i <package>
-
-# Remove a package
-lxpkg r <package>
-
-# List installed packages
-lxpkg l
-
-# Update repositories
-lxpkg u
-
-# Upgrade installed packages
-lxpkg U
+lxpkg [a|b|c|d|i|m|o|O|r|R|rr|s|S|l|u|U|v] [pkg...]
+Commands:
+  a, alternatives   - List and swap alternatives
+  b, build         - Build packages
+  c, checksum      - Generate checksums
+  d, depends       - List package dependencies
+  i, install       - Install packages
+  m, manifest      - Show package manifest
+  o, owns          - Show which package owns a file
+  O, orphans       - List orphaned packages
+  r, remove        - Remove packages
+  R, revdepends    - List reverse dependencies (installed)
+  rr, reporevdepends - List reverse dependencies (repository)
+  s, search        - Search for packages
+  S, size          - Show package size
+  l, list          - List installed packages
+  u, update        - Update repositories
+  U, upgrade       - Upgrade packages
+  v, version       - Show package manager version
 ```
 
 ### Package Creation Example: htop
