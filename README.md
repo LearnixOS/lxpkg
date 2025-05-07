@@ -144,9 +144,10 @@ Each package resides in `/usr/src/lxpkg/repo/<category>/<package>/` and includes
 
 * **sources**: Download URL(s).
 * **version**: Package version and release.
-* **build**: Build script (optional).
-* **depends**: Runtime dependencies.
+* **build**: Build script.
+* **depends**: Dependencies.
 * **checksums**: Source file verification hashes.
+* **patches**: Patches.
 
 ### Database Structure
 
@@ -154,6 +155,7 @@ Installed packages are tracked in `/var/db/lxpkg/installed/`, each containing:
 
 * **manifest**: List of installed files.
 * **version**: Installed version and release.
+* **depends**: List of needed dependencies for specific package.
 
 ## Contributing
 
