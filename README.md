@@ -38,25 +38,24 @@ Dependencies
 LXPKG requires basic build tools. Install these first:
 
 Debian/Ubuntu/Mint:
-bash
-
+```bash
 sudo apt update
 sudo apt install gcc make pkg-config aria2 tar gzip xz-utils zstd b3sum ncurses-dev git
+```
 
 Arch Linux:
-bash
-
+```bash
 sudo pacman -S gcc make pkgconf aria2 tar gzip xz zstd blake3 ncurses git
+```
 
 Fedora:
-bash
-
+```bash
 sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel git
+```
 
 Usage
 Basic Commands
-bash
-
+```bash
 # Search for packages
 lxpkg s <query>
 
@@ -74,6 +73,7 @@ lxpkg u
 
 # Upgrade installed packages
 lxpkg U
+```
 
 Package Creation Example (htop)
 
@@ -81,14 +81,14 @@ Here's how to create a package definition for htop:
 
     Create package directory:
 
-bash
-
+```bash
 mkdir -p /usr/src/lxpkg/repo/extra/htop
 cd /usr/src/lxpkg/repo/extra/htop
+```
 
     Create package files:
 
-bash
+```bash
 
 # sources file
 echo "https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz" > sources
@@ -117,9 +117,10 @@ rm htop-3.3.0.tar.xz
 
     Install the package:
 
-bash
+```bash
 
 lxpkg i htop
+```
 
 Technical Details
 Package Structure
