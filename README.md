@@ -66,8 +66,6 @@ sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel 
 ### Commands
 
 ```bash
-lxpkg [a|b|c|d|i|m|o|O|r|R|rr|s|S|l|u|U|v] [pkg...]
-Commands:
   a, alternatives   - List and swap alternatives
   b, build         - Build packages
   c, checksum      - Generate checksums
