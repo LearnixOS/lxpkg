@@ -1,33 +1,32 @@
-LXPKG - Independent Source-Based Linux Package Manager
-⚠️ Alpha Stage Warning
+# LXPKG - Independent Source-Based Linux Package Manager
+
+## ⚠️ Alpha Stage Warning
 
 LXPKG is in alpha. Expect bugs, incomplete features, and occasional breakage. If you're comfortable testing early-stage software and reporting issues, your help is appreciated!
-Overview
+
+## Overview
 
 LXPKG is a lightweight, source-based package manager for Linux users who prefer compiling software from source. Inspired by KISS Linux, it’s designed to work across multiple distributions, providing a simple and transparent way to manage software builds.
-Features
 
-    Minimal Dependencies: Written in POSIX shell (/bin/sh) with no external language requirements.
+## Features
 
-    Source-Based: Downloads and compiles packages from source.
+* **Minimal Dependencies**: Written in POSIX shell (/bin/sh) with no external language requirements.
+* **Source-Based**: Downloads and compiles packages from source.
+* **Flexible**: Works across multiple Linux distributions.
+* **Transparent**: Easy to understand and modify as it's just shell scripts.
+* **Lightweight**: No daemons or background processes.
 
-    Flexible: Works across multiple Linux distributions.
+## Supported Distributions
 
-    Transparent: Easy to understand and modify as it's just shell scripts.
+* **Primary Development Platform**: Linux Mint.
+* **Tested On**: Ubuntu, Debian, Arch Linux, Fedora.
+* **Expected Compatibility**: Most distributions with standard GNU toolchains.
 
-    Lightweight: No daemons or background processes.
+## Installation
 
-Supported Distributions
+### Quick Start
 
-    Primary Development Platform: Linux Mint.
-
-    Tested On: Ubuntu, Debian, Arch Linux, Fedora.
-
-    Expected Compatibility: Most distributions with standard GNU toolchains.
-
-Installation
-Quick Start
-
+```bash
 # Clone the repository
 git clone https://github.com/learnixOS/repo.git /usr/src/lxpkg/repo
 
@@ -37,26 +36,36 @@ sudo chmod +x /usr/bin/lxpkg
 
 # Verify installation
 lxpkg v
+```
 
-Dependencies
+### Dependencies
 
 Ensure basic build tools are installed:
-Debian/Ubuntu/Mint:
 
+#### Debian/Ubuntu/Mint:
+
+```bash
 sudo apt update
 sudo apt install gcc make pkg-config aria2 tar gzip xz-utils zstd b3sum ncurses-dev git
+```
 
-Arch Linux:
+#### Arch Linux:
 
+```bash
 sudo pacman -S gcc make pkgconf aria2 tar gzip xz zstd blake3 ncurses git
+```
 
-Fedora:
+#### Fedora:
 
+```bash
 sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel git
+```
 
-Usage
-Basic Commands
+## Usage
 
+### Basic Commands
+
+```bash
 # Search for packages
 lxpkg s <query>
 
@@ -74,26 +83,34 @@ lxpkg u
 
 # Upgrade installed packages
 lxpkg U
+```
 
-Package Creation Example: htop
+### Package Creation Example: htop
 
-    Create the package directory:
+#### Create the package directory:
 
+```bash
 mkdir -p /usr/src/lxpkg/repo/extra/htop
 cd /usr/src/lxpkg/repo/extra/htop
+```
 
-Define package files:
+#### Define package files:
 
-    Sources:
+##### Sources:
 
+```bash
 echo "https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz" > sources
+```
 
-Version:
+##### Version:
 
+```bash
 echo "3.3.0 1" > version
+```
 
-Build Script:
+##### Build Script:
 
+```bash
 cat > build << 'EOF'
 #!/bin/sh
 set -e
@@ -103,66 +120,59 @@ make
 make install DESTDIR="$dest"
 EOF
 chmod +x build
+```
 
-Dependencies:
+##### Dependencies:
 
+```bash
 echo "ncurses" > depends
+```
 
-Checksums:
+##### Checksums:
 
-        wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
-        sha256sum htop-3.3.0.tar.xz | awk '{print $1}' > checksums
-        rm htop-3.3.0.tar.xz
+```bash
+wget https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz
+sha256sum htop-3.3.0.tar.xz | awk '{print $1}' > checksums
+rm htop-3.3.0.tar.xz
+```
 
-Technical Details
-Package Structure
+## Technical Details
 
-Each package resides in /usr/src/lxpkg/repo/<category>/<package>/ and includes:
+### Package Structure
 
-    sources: Download URL(s).
+Each package resides in `/usr/src/lxpkg/repo/<category>/<package>/` and includes:
 
-    version: Package version and release.
+* **sources**: Download URL(s).
+* **version**: Package version and release.
+* **build**: Build script (optional).
+* **depends**: Runtime dependencies.
+* **checksums**: Source file verification hashes.
 
-    build: Build script (optional).
+### Database Structure
 
-    depends: Runtime dependencies.
+Installed packages are tracked in `/var/db/lxpkg/installed/`, each containing:
 
-    checksums: Source file verification hashes.
+* **manifest**: List of installed files.
+* **version**: Installed version and release.
 
-Database Structure
-
-Installed packages are tracked in /var/db/lxpkg/installed/, each containing:
-
-    manifest: List of installed files.
-
-    version: Installed version and release.
-
-Contributing
+## Contributing
 
 LXPKG is a community project. Contributions are welcome in the following areas:
 
-    Bug fixes (especially shell script edge cases).
+* Bug fixes (especially shell script edge cases).
+* Support for additional build systems.
+* Enhanced dependency resolution.
+* Documentation improvements.
+* Testing across distributions.
 
-    Support for additional build systems.
+### Contribution Process
 
-    Enhanced dependency resolution.
+1. Fork the repository.
+2. Create a feature branch.
+3. Submit a pull request.
 
-    Documentation improvements.
+## Known Issues
 
-    Testing across distributions.
-
-Contribution Process
-
-    Fork the repository.
-
-    Create a feature branch.
-
-    Submit a pull request.
-
-Known Issues
-
-    Limited dependency resolution (basic ldd-based checking only).
-
-    No package signing support yet.
-
-    Issues with filenames containing special characters.
+* Limited dependency resolution (basic ldd-based checking only).
+* No package signing support yet.
+* Issues with filenames containing special characters.
