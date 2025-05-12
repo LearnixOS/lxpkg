@@ -78,23 +78,31 @@ sudo dnf install gcc make pkg-config aria2 tar gzip xz zstd b3sum ncurses-devel 
 ### Commands
 
 ```bash
-  a, alternatives   - List and swap alternatives
-  b, build         - Build packages
-  c, checksum      - Generate checksums
-  d, depends       - List package dependencies
-  i, install       - Install packages
-  m, manifest      - Show package manifest
-  o, owns          - Show which package owns a file
-  O, orphans       - List orphaned packages
-  r, remove        - Remove packages
-  R, revdepends    - List reverse dependencies (installed)
-  rr, reporevdepends - List reverse dependencies (repository)
-  s, search        - Search for packages
-  S, size          - Show package size
-  l, list          - List installed packages
-  u, update        - Update repositories
-  U, upgrade       - Upgrade packages
-  v, version       - Show package manager version
+  a,alternatives       List or swap package alternatives
+  b,build              Build packages from source
+  c,checksum           Generate package checksums
+  clean                Clean package cache
+  d,depends            List package dependencies
+  i,install            Install packages
+  m,manifest           Show installed package files
+  o,owns               Show which package owns a file
+  O,orphans            List orphaned packages
+  r,remove             Remove packages
+  R,revdepends         List installed reverse dependencies
+  rr,reporevdepends    List repository reverse dependencies
+  s,search             Search for packages
+  S,size               Show package size
+  l,list               List installed packages
+  u,update             Update repositories
+  U,upgrade            Upgrade installed packages
+  v,version            Show lxpkg version
+  h,help               Show this help message
+Environment Variables:
+  BOOTSTRAP_LXPKG      Install to a custom root (e.g., /mnt)
+  LXPKG_PATH           Repository paths (default: /usr/src/lxpkg/repo)
+  LXPKG_COMPRESS       Compression type (gz, xz, zst; default: xz)
+  LXPKG_SKIP_CHECKSUMS Skip checksum verification (set to 1)
+  LXPKG_STRIP          Disable binary stripping (set to 0)
 ```
 
 ### Package Creation Example: htop
