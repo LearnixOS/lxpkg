@@ -200,23 +200,23 @@ LXPKG is a community project. Contributions are welcome in the following areas:
   - Replaced Bash-specific parameter expansion (`${var//pattern/replacement}`) with POSIX-compatible `sed` for cleaning `repo_ver` and `repo_rel` in the package database recording step.
   - Resolved the "Bad substitution" error when running under `sh` (e.g., `dash`), ensuring compatibility with POSIX shells.
   - Added validation for version and release values to prevent invalid database writes.
-  - **Location:** `pkg_install`, lines ~510-514.
+  - **Location:** `pkg_install`
 
 - **Enhanced Checksum Validation in `pkg_install`**
   - Added pre-build validation of the `checksums` file to check for existence and non-empty content before calling `pkg_build`.
   - Prevents downstream errors from malformed or missing `checksums` files.
   - Allows bypassing with `LXPKG_SKIP_CHECKSUMS=1` for flexibility during debugging.
-  - **Location:** `pkg_install`, lines ~480-490.
+  - **Location:** `pkg_install`
 
 - **Improved `pkg_verify` Robustness**
   - Refined checksum verification to handle malformed `checksums` files more gracefully.
   - Added checks for empty files and invalid entries (missing hash or filename), with clearer error messages (e.g., `Malformed checksum entry #1 in ... (expected: <hash> <filename>, got: ...)`).
   - Introduced a `valid_checksums` counter to ensure at least one valid checksum is processed.
   - Retained `b3sum` for BLAKE3 checksum verification as requested.
-  - **Location:** `pkg_verify`, lines ~132-150.
+  - **Location:** `pkg_verify`
 
 - **Better Error Handling and Logging in `pkg_install`**
   - Improved logging throughout `pkg_install` to trace the installation process (e.g., cache checking, building, database recording).
   - Added error handling for file copying and database writes.
   - Logging warnings for non-critical failures (e.g., missing source files) while ensuring critical failures (e.g., manifest copying) terminate with clear errors.
-  - **Location:** `pkg_install`, lines ~495-530.
+  - **Location:** `pkg_install`
