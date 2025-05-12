@@ -1,7 +1,7 @@
 <div align="center">
 
 
-# LXPKG version 1.2.4 - Independent Source-Based Linux Package Manager
+# LXPKG - Independent Source-Based Linux Package Manager
 
 <div align="center">
 
@@ -192,7 +192,7 @@ LXPKG is a community project. Contributions are welcome in the following areas:
 * Issues with filenames containing special characters.
 
 
-## Changelog
+## Changelog version 1.2.4
 
 ### Major Changes
 
@@ -207,7 +207,7 @@ LXPKG is a community project. Contributions are welcome in the following areas:
   - Allows bypassing with `LXPKG_SKIP_CHECKSUMS=1` for flexibility during debugging.
 
 - **Improved `pkg_verify` Robustness**
-  - Refined checksum verification to handle malformed `checksums` files more gracefully.
+  - Refined checksum verification to handle malform==> lxpkg version 1.2.4ed `checksums` files more gracefully.
   - Added checks for empty files and invalid entries (missing hash or filename), with clearer error messages (e.g., `Malformed checksum entry #1 in ... (expected: <hash> <filename>, got: ...)`).
   - Introduced a `valid_checksums` counter to ensure at least one valid checksum is processed.
   - Retained `b3sum` for BLAKE3 checksum verification as requested.
