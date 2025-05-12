@@ -1,7 +1,7 @@
 <div align="center">
 
 
-# LXPKG - Independent Source-Based Linux Package Manager
+# LXPKG version 1.2.4 - Independent Source-Based Linux Package Manager
 
 <div align="center">
 
