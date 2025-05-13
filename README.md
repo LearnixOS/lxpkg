@@ -6,7 +6,7 @@
 
 <div align="center">
 
-## ⚠️ Alpha Stage Warning ⚠️
+## ⚠️ Beta Stage Warning ⚠️
 
 <div align="left">
 
