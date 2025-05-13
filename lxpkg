@@ -103,7 +103,7 @@ _pkg_find() {
 pkg_find_version() {
     read -r ver_pre rel_pre < "$repo_dir/version" 2>/dev/null || { ver_pre=; rel_pre=; }
     repo_ver=$ver_pre
-    repo_rel=$rel_pre
+    repo_rel=${rel_pre:-0}  # Default to '0' if release is empty
 }
 
 # Check package cache
@@ -514,9 +514,11 @@ pkg_install() {
     # Use sed for POSIX-compatible character filtering
     clean_ver=$(printf '%s' "$repo_ver" | sed 's/[^0-9a-zA-Z.-]//g')
     clean_rel=$(printf '%s' "$repo_rel" | sed 's/[^0-9a-zA-Z.-]//g')
-    if [ -z "$clean_ver" ] || [ -z "$clean_rel" ]; then
-        die "Invalid version ($repo_ver) or release ($repo_rel) for $1"
+    if [ -z "$clean_ver" ]; then
+        die "Invalid version ($repo_ver) for $1"
     fi
+    # Allow empty clean_rel, default to '0' for consistency
+    clean_rel=${clean_rel:-0}
     printf '%s %s\n' "$clean_ver" "$clean_rel" > "$sys_db/$1/version" || die "Failed to write version file for $1"
     cp -f "$repo_dir/depends" "$sys_db/$1/depends" 2>/dev/null || :
     cp -f "$pkg_dir/$1/$pkg_db/$1/etcsums" "$sys_db/$1/etcsums" 2>/dev/null || :
