@@ -10,7 +10,7 @@
 
 <div align="left">
 
-LXPKG is in alpha. Expect bugs, incomplete features, and occasional breakage. If you're comfortable testing early-stage software and reporting issues, your help is appreciated!
+LXPKG is in Beta. Expect bugs, incomplete features, and occasional breakage. If you're comfortable testing early-stage software and reporting issues, your help is appreciated!
 
 ## Overview
 
