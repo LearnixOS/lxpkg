@@ -196,7 +196,7 @@ LXPKG is a community project. Contributions are welcome in the following areas:
 * Issues with filenames containing special characters.
 
 
-## Changelog version 1.2.4
+## Changelog version 1.2.7
 
 ### Major Changes
 
