@@ -1,6 +1,6 @@
 #!/bin/sh
-# lxpkg: Simple package manager for lxos (https://learnixos.github.io)
-# Version: 1.2.4
+# lxpkg: package manager for lxos (https://learnixos.github.io)
+# Version: 1.2.7
 
 # Exit on errors
 set -e
@@ -16,7 +16,10 @@ c_red='\033[1;31m'       # Bold red (errors)
 c_blue='\033[1;34m'      # Bold blue (installation)
 
 # Logging functions
-log() { printf '%b%s %b%s%b\n' "$c_grey" "==>" "$c_green" "$*" "$c_reset"; }
+log() {
+    [ "${LXPKG_VERBOSE:-0}" -eq 1 ] || return 0
+    printf '%b%s %b%s%b\n' "$c_grey" "==>" "$c_green" "$*" "$c_reset"
+}
 warn() { printf '%b%s %b%s%b\n' "$c_yellow" "WARNING:" "$c_reset" "$*" "$c_reset" >&2; }
 die() { printf '%b%s %b%s%b\n' "$c_red" "ERROR:" "$c_reset" "$*" "$c_reset" >&2; exit 1; }
 
@@ -26,8 +29,12 @@ equ() { [ "$1" = "$2" ]; }
 contains() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
 prompt() {
     printf '%b%s%b\n' "$c_green" "$*" "$c_reset"
-    printf '%b%s%b' "$c_grey" "Continue? [Enter/Ctrl+C] " "$c_reset"
-    read -r _
+    printf '%b%s%b' "$c_grey" "Continue? [y/N] " "$c_reset"
+    read -r response
+    case "$response" in
+        [yY]*) return 0 ;;
+        *) die "Operation aborted by user" ;;
+    esac
 }
 
 # Create default /etc/lxpkg.conf
@@ -41,13 +48,21 @@ create_default_conf() {
         printf 'LXPKG_SKIP_CHECKSUMS=0\n' >> "$conf_file"
         printf 'LXPKG_STRIP=1\n' >> "$conf_file"
         printf 'LXPKG_COLOR=1\n' >> "$conf_file"
+        printf 'LXPKG_VERBOSE=0\n' >> "$conf_file"
     fi
 }
 
 # Check for pre-installed system packages
 pkg_check_system() {
     local pkg="$1"
+    local paths="/bin /usr/bin /sbin /usr/sbin /usr/local/bin /usr/local/sbin /lib /usr/lib /lib64 /usr/lib64 /opt"
+    
     case "$pkg" in
+        bash)
+            for path in /bin/bash /usr/bin/bash; do
+                [ -x "$path" ] && { log "$pkg detected at $path, skipping"; return 0; }
+            done
+            ;;
         glibc)
             for lib in /lib/libc.so* /usr/lib/libc.so* /lib64/libc.so* /usr/lib64/libc.so*; do
                 [ -f "$lib" ] && { log "$pkg detected in $lib, skipping"; return 0; }
@@ -56,19 +71,37 @@ pkg_check_system() {
         xorg-server)
             [ -f "/usr/bin/Xorg" ] || [ -f "/usr/lib/xorg/Xorg" ] && { log "$pkg detected, skipping"; return 0; }
             ;;
+        libreoffice)
+            [ -d "/opt/libreoffice" ] || [ -f "/usr/bin/libreoffice" ] && { log "$pkg detected in /opt or /usr/bin, skipping"; return 0; }
+            ;;
+        sed|grep|procps-ng)
+            for path in /bin /usr/bin; do
+                [ -x "$path/$pkg" ] && { log "$pkg detected at $path/$pkg, marking as system-installed"; mkdir -p "$sys_db/$pkg"; printf 'system system\n' > "$sys_db/$pkg/version"; return 0; }
+            done
+            ;;
         *)
             if [ -d "$sys_db/$pkg" ] && [ -f "$sys_db/$pkg/version" ]; then
                 read -r ver rel < "$sys_db/$pkg/version" 2>/dev/null
                 log "$pkg version $ver-$rel already installed, skipping"
                 return 0
             fi
+            for path in $paths; do
+                if [ -f "$path/$pkg" ] || [ -f "$path/lib$pkg.so" ] || [ -d "$path/$pkg" ]; then
+                    log "$pkg detected in $path, marking as system-installed"
+                    mkdir -p "$sys_db/$pkg"
+                    printf 'system system\n' > "$sys_db/$pkg/version"
+                    return 0
+                fi
+            done
             ;;
     esac
     return 1
 }
 
 # Find package
-pkg_find() { _pkg_find "$@" || die "Package '$1' not found in repositories"; }
+pkg_find() {
+    _pkg_find "$@" || return 1
+}
 
 _pkg_find() {
     local pkg="$1" find_type="${2:-}" test_type="${3:-}" search_path="${4:-$LXPKG_PATH}"
@@ -103,7 +136,7 @@ _pkg_find() {
 pkg_find_version() {
     read -r ver_pre rel_pre < "$repo_dir/version" 2>/dev/null || { ver_pre=; rel_pre=; }
     repo_ver=$ver_pre
-    repo_rel=${rel_pre:-0}  # Default to '0' if release is empty
+    repo_rel=${rel_pre:-0}
 }
 
 # Check package cache
@@ -119,38 +152,180 @@ pkg_cache() {
     return 1
 }
 
-# Get checksums
-pkg_checksums() {
-    pkg_find "$1"
-    [ -f "$repo_dir/checksums" ] && { log "Found checksums file at $repo_dir/checksums"; cat "$repo_dir/checksums"; } || { warn "No checksums found for $1"; return 1; }
+
+
+# Update repositories
+pkg_update() {
+    log "Updating package repositories..."
+    IFS=:
+    for repo in $LXPKG_PATH; do
+        [ -d "$repo" ] || { warn "Repository path $repo does not exist"; continue; }
+        local repo_url="https://github.com/LearnixOS/repo/archive/refs/heads/main.tar.gz"
+        local repo_name="LearnixOS-repo"
+        log "Updating repository $repo_name from $repo_url"
+        local tmp_dir=$(mktemp -d)
+        if curl -L "$repo_url" -o "$tmp_dir/repo.tar.gz" 2>/dev/null; then
+            mkdir -p "$tmp_dir/repo"
+            tar -C "$tmp_dir/repo" -xzf "$tmp_dir/repo.tar.gz" --strip-components=1 || { warn "Failed to extract $repo_url"; rm -rf "$tmp_dir"; continue; }
+            rm -rf "$repo" || warn "Failed to remove old repository $repo"
+            mv "$tmp_dir/repo" "$repo" || warn "Failed to update repository $repo"
+            log "Repository $repo_name updated successfully"
+        else
+            warn "Failed to download $repo_url for $repo_name"
+        fi
+        rm -rf "$tmp_dir"
+    done
+    unset IFS
+    log "Repository update completed"
 }
 
-# Verify checksums using b3sum
-pkg_verify() {
-    [ "$LXPKG_SKIP_CHECKSUMS" = 1 ] && { log "Skipping checksum verification for $1"; return 0; }
+
+# Check checksums (for logging only)
+pkg_checksums() {
     pkg_find "$1"
-    [ -f "$repo_dir/checksums" ] || { warn "Checksum file missing at $repo_dir/checksums for $1"; return 1; }
-    local checksum_lines=$(wc -l < "$repo_dir/checksums")
-    [ "$checksum_lines" -eq 0 ] && { warn "Checksum file $repo_dir/checksums is empty for $1"; return 1; }
-    pkg_source "$1"  # Download sources first to ensure $src_dir/$1 exists
-    cd "$src_dir/$1" || die "Failed to change to source directory $src_dir/$1"
-    local i=1
-    local valid_checksums=0
-    pkg_checksums "$1" | while read -r sum file; do
-        if [ -z "$sum" ] || [ -z "$file" ]; then
-            warn "Malformed checksum entry #$i in $repo_dir/checksums for $1 (expected: <hash> <filename>, got: '$sum $file')"
+    if [ -f "$repo_dir/checksums" ]; then
+        local checksum_lines=$(wc -l < "$repo_dir/checksums" 2>/dev/null || echo 0)
+        if [ "$checksum_lines" -gt 0 ]; then
+            log "Found checksum file at $repo_dir/checksums with $checksum_lines entries for $1"
+            return 0
+        else
+            warn "Checksum file $repo_dir/checksums is empty for $1"
             return 1
         fi
-        [ -f "$file" ] || { warn "Source file $file not found in $src_dir/$1 for $1"; return 1; }
-        log "Verifying checksum for $file in $1"
-        b3sum "$file" 2>/dev/null | { read -r b3 _; [ "$b3" = "$sum" ] || die "Checksum mismatch for $file in $1 (expected $sum, got $b3)"; }
-        valid_checksums=$((valid_checksums + 1))
-        i=$((i + 1))
-    done
-    [ "$valid_checksums" -eq 0 ] && { warn "No valid checksum entries found in $repo_dir/checksums for $1"; return 1; }
-    log "Checksum verification passed for $1"
-    cd "$ppwd"
+    else
+        warn "No checksums file found at $repo_dir/checksums for $1"
+        return 1
+    fi
 }
+
+# Verify checksums
+pkg_verify() {
+    local pkg="$1"
+    pkg_find "$pkg"
+    if [ "$LXPKG_SKIP_CHECKSUMS" = "1" ]; then
+        log "Checksum verification skipped for $pkg (LXPKG_SKIP_CHECKSUMS=1)"
+        return 0
+    fi
+    if [ ! -f "$repo_dir/checksums" ]; then
+        warn "No checksums file found at $repo_dir/checksums for $pkg"
+        prompt "Checksum file missing for $pkg. Continue without verification?"
+        return 0
+    fi
+    local checksum_lines=$(wc -l < "$repo_dir/checksums" 2>/dev/null || echo 0)
+    if [ "$checksum_lines" -eq 0 ]; then
+        warn "Checksum file $repo_dir/checksums is empty for $pkg"
+        prompt "Empty checksum file for $pkg. Continue without verification?"
+        return 0
+    fi
+    log "Verifying checksums for $pkg"
+    local src_dir="$src_dir/$pkg"
+    while read -r expected_checksum file; do
+        [ -z "$file" ] && continue
+        local full_path="$src_dir/$file"
+        if [ ! -f "$full_path" ]; then
+            warn "Source file $full_path not found for $pkg"
+            prompt "Missing source file $file for $pkg. Continue?"
+            continue
+        fi
+        local actual_checksum=$(sha256sum "$full_path" | awk '{print $1}')
+        if [ "$actual_checksum" != "$expected_checksum" ]; then
+            warn "Checksum mismatch for $file in $pkg: expected $expected_checksum, got $actual_checksum"
+            prompt "Checksum verification failed for $file in $pkg. Continue?"
+            continue
+        fi
+        log "Checksum verified for $file in $pkg"
+    done < "$repo_dir/checksums"
+    log "All checksums verified for $pkg"
+    return 0
+}
+
+# Search for packages
+pkg_search() {
+    local search_term="${1:-.}"
+    log "Searching for packages matching '$search_term'..."
+    set +f
+    local found=0
+    IFS=:
+    for path in $LXPKG_PATH; do
+        [ -d "$path" ] || continue
+        for section in "$path"/*; do
+            [ -d "$section" ] || continue
+            for pkg_path in "$section"/*; do
+                if [ -d "$pkg_path" ] && [ -f "$pkg_path/version" ]; then
+                    local pkg_name=$(basename "$pkg_path")
+                    if printf '%s' "$pkg_name" | grep -qi "$search_term"; then
+                        found=1
+                        read -r ver rel < "$pkg_path/version" 2>/dev/null || { ver="unknown"; rel="unknown"; }
+                        local section_name=$(basename "$section")
+                        printf '%b * %b%-20s %bSection:%b %s %bVersion:%b %s-%s\n' \
+                            "$c_grey" "$c_cyan" "$pkg_name" "$c_grey" "$c_green" "$section_name" "$c_grey" "$c_green" "$ver" "$rel"
+                    fi
+                fi
+            done
+        done
+    done
+    unset IFS
+    set -f
+    [ "$found" -eq 0 ] && warn "No packages found matching '$search_term'"
+    return 0
+}
+
+# Helper function to locate Cargo.toml
+find_cargo_toml() {
+    local dir="$1"
+    local cargo_toml=$(find "$dir" -maxdepth 2 -type f -name "Cargo.toml" | head -n 1)
+    if [ -n "$cargo_toml" ]; then
+        dirname "$cargo_toml"
+        return 0
+    else
+        warn "No Cargo.toml found in $dir or its subdirectories"
+        return 1
+    fi
+}
+
+
+# Remove package
+pkg_remove() {
+    local pkg="$1" sys_db="/var/db/lxpkg/installed"
+    [ -d "$sys_db/$pkg" ] || die "Package '$pkg' not found in system"
+    [ -f "$sys_db/$pkg/manifest" ] || warn "No manifest found for $pkg, proceeding with database cleanup"
+    log "Removing $pkg from system..."
+    [ -f "/usr/src/lxpkg/repo/extra/$pkg/post-remove" ] && { log "Running post-remove script for $pkg"; sh -e "/usr/src/lxpkg/repo/extra/$pkg/post-remove" "$LXPKG_ROOT/" || warn "Post-remove script failed for $pkg"; }
+    local removed=0
+    if [ -f "$sys_db/$pkg/manifest" ]; then
+        log "Processing manifest at $sys_db/$pkg/manifest"
+        while read -r file; do
+            case $file in
+                */) continue ;;
+                *)
+                    local dest_file="$LXPKG_ROOT/$file"
+                    if [ -f "$dest_file" ] || [ -L "$dest_file" ]; then
+                        log "Removing $dest_file"
+                        rm -f "$dest_file" || warn "Failed to remove $dest_file"
+                        removed=$((removed + 1))
+                    fi
+                    ;;
+            esac
+        done < "$sys_db/$pkg/manifest"
+    fi
+    for bin_path in /usr/local/bin /usr/bin; do
+        if [ -f "$bin_path/$pkg" ]; then
+            log "Removing binary $bin_path/$pkg"
+            rm -f "$bin_path/$pkg" || warn "Failed to remove $bin_path/$pkg"
+            removed=$((removed + 1))
+        fi
+    done
+    if [ -f "$sys_db/$pkg/manifest" ]; then
+        while read -r file; do
+            case $file in */) local dir="$LXPKG_ROOT/$file"; [ -d "$dir" ] && rmdir "$dir" 2>/dev/null || : ;; esac
+        done < "$sys_db/$pkg/manifest"
+    fi
+    [ $removed -eq 0 ] && warn "No files removed for $pkg; cleaning up database entry"
+    log "Removing $pkg from package database at $sys_db/$pkg"
+    rm -rf "$sys_db/$pkg" || die "Failed to remove $sys_db/$pkg"
+    log "Removed $pkg successfully"
+}
+
 
 # Get sources
 pkg_sources() {
@@ -167,6 +342,20 @@ pkg_depends() {
 # Check if installed
 pkg_is_installed() { [ -d "$sys_db/$1" ]; }
 
+# Clean cache
+pkg_clean_cache() {
+    log "Cleaning package cache..."
+    set +f
+    for cache in "$cache_dir"/*.tar.*; do
+        [ -f "$cache" ] || continue
+        rm -f "$cache"
+        log "Removed $cache"
+    done
+    set -f
+    log "Cache cleaned."
+}
+
+
 # Resolve dependencies
 pkg_resolve_deps() {
     unset _seen_deps _dep_stack
@@ -179,10 +368,37 @@ _resolve_deps() {
         contains "$_seen_deps" "$pkg" && continue
         contains "$_dep_stack" "$pkg" && { warn "Circular dependency detected involving $pkg"; continue; }
         _dep_stack="$_dep_stack $pkg"
-        pkg_find "$pkg" || die "Dependency $pkg not found in repository"
+        if ! pkg_find "$pkg" "" "" "$LXPKG_PATH"; then
+            warn "Dependency $pkg not found in repositories"
+            prompt "Dependency $pkg is missing. Continue with installation?"
+            continue
+        fi
         if [ -f "$repo_dir/depends" ]; then
-            for dep in $(pkg_depends "$pkg"); do
-                if ! pkg_is_installed "$dep"; then
+            local deps=$(pkg_depends "$pkg")
+            if [ -n "$deps" ]; then
+                log "Dependencies for $c_cyan$pkg$c_reset:"
+                for dep in $deps; do
+                    if pkg_is_installed "$dep"; then
+                        read -r ver rel < "$sys_db/$dep/version" 2>/dev/null || { ver="unknown"; rel="unknown"; }
+                        printf '%b * %b%-20s %bStatus:%b %s %bVersion:%b %s-%s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_green" "Installed" "$c_grey" "$c_green" "$ver" "$rel"
+                    elif pkg_check_system "$dep"; then
+                        printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_green" "System-installed"
+                    elif ! pkg_find "$dep" "" "" "$LXPKG_PATH"; then
+                        printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_red" "Missing"
+                    else
+                        printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_yellow" "Not installed"
+                    fi
+                done
+            else
+                log "$pkg has no dependencies"
+            fi
+            for dep in $deps; do
+                if ! pkg_is_installed "$dep" && ! pkg_check_system "$dep"; then
+                    if ! pkg_find "$dep" "" "" "$LXPKG_PATH"; then
+                        warn "Dependency $dep not found in repositories"
+                        prompt "Dependency $dep is missing. Continue with installation?"
+                        continue
+                    fi
                     log "Installing missing dependency: $dep"
                     _resolve_deps "$dep"
                     pkg_build "$dep"
@@ -195,64 +411,125 @@ _resolve_deps() {
     done
 }
 
-# Order packages by dependencies
-pkg_order() {
-    unset _seen
-    order=""
-    _pkg_order "$@"
-    printf '%s\n' $order
-}
-
-_pkg_order() {
-    for pkg; do
-        contains "$_seen" "$pkg" && continue
-        _seen="$_seen $pkg"
-        for dep in $(pkg_depends "$pkg"); do
-            _pkg_order "$dep"
-        done
-        order="$order $pkg"
+# List installed packages
+pkg_list() {
+    set +f
+    for pkg in "$sys_db/"*; do
+        if [ -d "$pkg" ] && [ -f "$pkg/version" ]; then
+            read -r ver rel < "$pkg/version" 2>/dev/null || continue
+            printf '%b%s %b%s-%s%b\n' "$c_cyan" "${pkg##*/}" "$c_green" "$ver" "$rel" "$c_reset"
+        fi
     done
+    set -f
 }
 
-# Download sources
+
+
+
+
+# Fix runtime dependencies
+pkg_fix_deps() {
+    local pkg="$1"
+    [ -f "$repo_dir/depends" ] || { log "$pkg has no dependencies"; return 0; }
+    local deps=$(cat "$repo_dir/depends" | while read -r dep make; do [ "$make" = "make" ] || printf '%s\n' "$dep"; done)
+    if [ -n "$deps" ]; then
+        log "Dependencies for $c_cyan$pkg$c_reset:"
+        for dep in $deps; do
+            case $dep in *'|'*) for alt_dep in $dep; do case $alt_dep in *'|'*) continue ;; *) dep=$alt_dep; break ;; esac; done ;; esac
+            if pkg_is_installed "$dep"; then
+                read -r ver rel < "$sys_db/$dep/version" 2>/dev/null || { ver="unknown"; rel="unknown"; }
+                printf '%b * %b%-20s %bStatus:%b %s %bVersion:%b %s-%s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_green" "Installed" "$c_grey" "$c_green" "$ver" "$rel"
+            elif pkg_check_system "$dep"; then
+                printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_green" "System-installed"
+            elif ! pkg_find "$dep" "" "" "$LXPKG_PATH"; then
+                printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_red" "Missing"
+                prompt "Dependency $dep not found in repositories. Continue with installation?"
+            else
+                printf '%b * %b%-20s %bStatus:%b %s\n' "$c_grey" "$c_cyan" "$dep" "$c_grey" "$c_yellow" "Not installed"
+                log "Installing dependency $dep for $pkg"
+                pkg_install "$dep"
+            fi
+        done
+    else
+        log "$pkg has no dependencies"
+    fi
+}
+
+# Download and extract sources
 pkg_source() {
     pkg_find "$1"
-    mkdir -p "$src_dir/$1"
-    cd "$src_dir/$1"
-    set +f
-    local i=1
-    [ -f "$repo_dir/sources" ] || { warn "No sources file found for $1 at $repo_dir/sources"; return 1; }
-    pkg_sources "$1" | while read -r src dest; do
-        log "Processing source #$i: $src"
-        case $src in *::*) src=${src#*::}; src=${src##* } ;; *) src=${src##* } ;; esac
-        case $dest in */*) mkdir -p "${dest%/*}" ;; esac
-        dest=${dest:-${src##*/}}
-        [ -f "$dest" ] && { log "Source $dest already exists, skipping download"; i=$((i + 1)); continue; }
-        log "Downloading $1: $src to $dest..."
-        local download_success=0
-        if command -v pv >/dev/null 2>&1; then
-            case $cmd_get in
-                *curl) content_length=$(curl -sI "$src" | grep -i Content-Length | awk '{print $2}' | tr -d '\r'); curl -fL "$src" | pv -s "${content_length:-0}" > "$dest" && download_success=1 ;;
-                *wget*) content_length=$(wget -q --spider "$src" 2>&1 | grep -i Length | awk '{print $2}' | tr -d '[]'); wget -O - "$src" | pv -s "${content_length:-0}" > "$dest" && download_success=1 ;;
-                *) curl -fL "$src" > "$dest" && download_success=1 ;;
-            esac
-        else
-            case $cmd_get in
-                *aria2c) aria2c -x 16 -s 16 -o "$dest" "$src" >/dev/null 2>&1 && download_success=1 ;;
-                *axel) axel -n 10 -o "$dest" "$src" >/dev/null 2>&1 && download_success=1 ;;
-                *curl) curl -fLo "$dest" "$src" >/dev/null 2>&1 && download_success=1 ;;
-                *wget*) wget -O "$dest" "$src" >/dev/null 2>&1 && download_success=1 ;;
-            esac
+    mkdir -p "$src_dir/$1" || die "Failed to create source directory $src_dir/$1"
+    cd "$src_dir/$1" || die "Failed to change to source directory $src_dir/$1"
+    if [ ! -f "$repo_dir/sources" ]; then
+        warn "No sources file found at $repo_dir/sources for $1"
+        return 1
+    fi
+    local i=1 has_sources=0
+    while read -r url file; do
+        [ -z "$url" ] && continue
+        has_sources=1
+        file=${file:-$(basename "$url")}
+        log "Processing source #$i: $url"
+        if [ ! -f "$file" ]; then
+            log "Downloading $1: $url to $file..."
+            if ! curl -L "$url" -o "$file" 2>/dev/null; then
+                warn "Failed to download $url for $1"
+                return 1
+            fi
+            log "Downloaded $1: $file successfully"
         fi
-        [ $download_success -eq 0 ] && { warn "Failed to download $src for $1 to $dest"; die "Download failed for source #$i of $1"; }
-        log "Downloaded $1: $dest successfully"
+        case $file in
+            *.tar.gz|*.tgz)
+                log "Extracting $file to $src_dir/$1"
+                if ! tar -xzf "$file" -C "$src_dir/$1"; then
+                    warn "Failed to extract $file for $1"
+                    return 1
+                fi
+                ;;
+            *.tar.bz2|*.tbz2)
+                log "Extracting $file to $src_dir/$1"
+                if ! tar -xjf "$file" -C "$src_dir/$1"; then
+                    warn "Failed to extract $file for $1"
+                    return 1
+                fi
+                ;;
+            *.tar.xz|*.txz)
+                log "Extracting $file to $src_dir/$1"
+                if ! tar -xJf "$file" -C "$src_dir/$1"; then
+                    warn "Failed to extract $file for $1"
+                    return 1
+                fi
+                ;;
+            *.zip)
+                log "Extracting $file to $src_dir/$1"
+                if ! unzip -q "$file" -d "$src_dir/$1"; then
+                    warn "Failed to extract $file for $1"
+                    return 1
+                fi
+                ;;
+            *)
+                warn "Unknown archive type for $file, skipping extraction"
+                continue
+                ;;
+        esac
         i=$((i + 1))
-    done
-    cd "$ppwd"
+    done < "$repo_dir/sources"
+    if [ "$has_sources" -eq 0 ]; then
+        warn "No valid source URLs found in $repo_dir/sources for $1"
+        return 1
+    fi
+    if ! find "$src_dir/$1" -maxdepth 1 -type f | grep -q .; then
+        warn "Source directory $src_dir/$1 is empty or contains no files for $1"
+        return 1
+    fi
+    log "Source files prepared for $1 in $src_dir/$1"
+    return 0
 }
 
 # Detect build system
 detect_build_system() {
+    [ -f "Cargo.toml" ] && echo "cargo" && return
+    [ -f "setup.py" ] || [ -f "requirements.txt" ] && echo "python" && return
     [ -f "meson.build" ] && echo "meson" && return
     [ -f "CMakeLists.txt" ] && echo "cmake" && return
     [ -f "autogen.sh" ] && echo "autotools-autogen" && return
@@ -261,95 +538,79 @@ detect_build_system() {
     echo "unknown"
 }
 
-# Default build
-default_build() {
-    local pkg="$1" dest="$2" build_system=$(detect_build_system) jobs=$(nproc 2>/dev/null || echo 4)
-    log "Detected build system: $build_system for $pkg in $PWD"
-    case "$build_system" in
-        meson) meson setup build --prefix=/usr; ninja -C build -j"$jobs"; ninja -C build install DESTDIR="$dest" ;;
-        cmake) mkdir -p build; cd build; cmake .. -DCMAKE_INSTALL_PREFIX=/usr; make -j"$jobs"; make install DESTDIR="$dest"; cd .. ;;
-        autotools-autogen) ./autogen.sh; ./configure --prefix=/usr; make -j"$jobs"; make install DESTDIR="$dest" ;;
-        autotools) ./configure --prefix=/usr; make -j"$jobs"; make install DESTDIR="$dest" ;;
-        make) make -j"$jobs"; make install DESTDIR="$dest" ;;
-        *) die "Unsupported build system for $pkg: $build_system" ;;
-    esac
-}
-
 # Build package
 pkg_build() {
-    pkg_find "$1"
-    pkg_find_version "$1"
-    cd "$repo_dir"
+    pkg_find "$1" || die "Package '$1' not found"
     pkg_verify "$1"
-    pkg_source "$1"
-    mkdir -p "$bld_dir/$1"
-    cd "$bld_dir/$1"
-    log "Extracting sources into build directory ($PWD)..."
-    cd "$src_dir/$1"
-    local extracted=0
-    set +f
-    for src in *.tar.* *.tgz *.zip *.gz *.bz2 *.xz; do
-        if [ -f "$src" ]; then
-            log "Extracting $src to $bld_dir/$1..."
-            case "$src" in
-                *.tar.*|*.tgz) tar -C "$bld_dir/$1" -xvf "$src" || die "Failed to extract $src" ;;
-                *.zip) unzip -q "$src" -d "$bld_dir/$1" || die "Failed to extract $src" ;;
-                *.gz|*.bz2|*.xz) tar -C "$bld_dir/$1" -xvf "$src" 2>/dev/null || { log "Single file $src, copying"; cp "$src" "$bld_dir/$1/"; } ;;
-            esac
-            extracted=1
-            break
-        fi
-    done
-    set -f
-    if [ $extracted -eq 0 ]; then
-        log "No archives found in $src_dir/$1, checking files..."
-        for src in *; do
-            if [ -f "$src" ]; then
-                log "Copying $src to $bld_dir/$1..."
-                cp -r "$src" "$bld_dir/$1/" || die "Failed to copy $src"
-                extracted=1
-                break
-            fi
-        done
+    mkdir -p "$bld_dir/$1" || die "Failed to create build directory $bld_dir/$1"
+    cd "$bld_dir/$1" || die "Failed to change to build directory $bld_dir/$1"
+    
+    log "Copying source files for $1 to $bld_dir/$1"
+    cp -r "$src_dir/$1"/* "$bld_dir/$1" 2>/dev/null || cp -r "$src_dir/$1"/.[!.]* "$bld_dir/$1" 2>/dev/null || die "Failed to copy source files for $1"
+    
+    local build_dir="$bld_dir/$1"
+    if [ -f "Cargo.toml" ]; then
+        build_dir=$(find_cargo_toml "$bld_dir/$1") || build_dir="$bld_dir/$1"
     fi
-    [ $extracted -eq 0 ] && die "No sources found in $src_dir/$1"
-    cd "$bld_dir/$1"
-    set +f
-    local src_dir=""
-    for dir in *; do
-        if [ -d "$dir" ]; then
-            cd "$dir" || continue
-            if [ -f "meson.build" ] || [ -f "CMakeLists.txt" ] || [ -f "autogen.sh" ] || [ -f "configure" ] || [ -f "Makefile" ] || [ -f "makefile" ]; then
-                src_dir="$dir"
-                cd ..
-                break
-            fi
+    cd "$build_dir" || die "Failed to change to build directory $build_dir"
+    
+    log "Building $1 in $build_dir..."
+    local build_system=$(detect_build_system)
+    log "Detected build system: $build_system for $1 in $PWD"
+    case "$build_system" in
+        cargo)
+            log "Building Rust project $1 with Cargo"
+            cargo build --release || die "Cargo build failed for $1"
+            mkdir -p "$pkg_dir/$1/usr/bin"
+            find target/release -maxdepth 1 -type f -executable -exec cp -f {} "$pkg_dir/$1/usr/bin/" \; || warn "Failed to copy binaries for $1"
+            ;;
+        python)
+            log "Installing Python-based project $1"
+            [ -f "setup.py" ] && {
+                python3 setup.py install --prefix=/usr --root="$pkg_dir/$1" || die "Python setup.py install failed for $1"
+            } || {
+                [ -f "requirements.txt" ] && {
+                    pip3 install -r requirements.txt --target="$pkg_dir/$1/usr/lib/python3/dist-packages" || warn "Failed to install Python dependencies for $1"
+                }
+                find . -maxdepth 1 -type f -executable -exec cp -f {} "$pkg_dir/$1/usr/bin/" \; || warn "Failed to copy Python scripts for $1"
+            }
+            ;;
+        meson)
+            meson setup build --prefix=/usr
+            ninja -C build -j"$(nproc 2>/dev/null || echo 4)"
+            ninja -C build install DESTDIR="$pkg_dir/$1"
+            ;;
+        cmake)
+            mkdir -p build
+            cd build
+            cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+            make -j"$(nproc 2>/dev/null || echo 4)"
+            make install DESTDIR="$pkg_dir/$1"
             cd ..
-        fi
-    done
-    set -f
-    src_dir=${src_dir:-.}
-    cd "$src_dir"
-    log "Building $1 in $PWD..."
-    if [ -f "$repo_dir/patches" ]; then
-        mkdir -p patches
-        cp -r "$repo_dir/patches"/* patches/
-        for patch in patches/*.patch; do [ -f "$patch" ] && patch -p1 < "$patch"; done
-    fi
-    if [ -f "$repo_dir/build" ]; then
-        sh -e "$repo_dir/build" "$pkg_dir/$1" || die "Build failed for $1"
-    else
-        default_build "$1" "$pkg_dir/$1"
-    fi
-    cd "$pkg_dir/$1"
-    find . -type f \( -path '*/bin/*' -o -path '*/sbin/*' \) -exec chmod +x {} +
-    cd "$bld_dir/$1"
-    tar -cf - -C "$pkg_dir/$1" . | case $LXPKG_COMPRESS in
-        gz) gzip -9 ;;
-        xz) xz -9 ;;
-        zst) zstd -19 ;;
-    esac > "$cache_dir/$1@$repo_ver-$repo_rel.tar.$LXPKG_COMPRESS"
-    cd "$ppwd"
+            ;;
+        autotools-autogen)
+            ./autogen.sh
+            ./configure --prefix=/usr
+            make -j"$(nproc 2>/dev/null || echo 4)"
+            make install DESTDIR="$pkg_dir/$1"
+            ;;
+        autotools)
+            ./configure --prefix=/usr
+            make -j"$(nproc 2>/dev/null || echo 4)"
+            make install DESTDIR="$pkg_dir/$1"
+            ;;
+        make)
+            make -j"$(nproc 2>/dev/null || echo 4)"
+            make install DESTDIR="$pkg_dir/$1"
+            ;;
+        *)
+            [ -f "$repo_dir/build" ] && {
+                log "Running custom build script for $1"
+                sh -e "$repo_dir/build" "$pkg_dir/$1" || die "Custom build script failed for $1"
+            } || die "Unsupported build system for $1: $build_system"
+            ;;
+    esac
+    log "Build completed for $1"
 }
 
 # Generate etcsums
@@ -364,19 +625,10 @@ pkg_etcsums() {
 
 # Handle /etc files
 pkg_etc() {
-    [ -f "$sys_db/$1/etcsums" ] && grep -Fx "$file" "$sys_db/$1/etcsums" >/dev/null && return 0
+    local pkg="$1" file="$2"
+    [ -f "$sys_db/$pkg/etcsums" ] && grep -Fx "$file" "$sys_db/$pkg/etcsums" >/dev/null && return 0
     [ -f "$LXPKG_ROOT/$file" ] && { mv "$LXPKG_ROOT/$file" "$LXPKG_ROOT/$file.lxpkgnew"; return 0; }
     return 1
-}
-
-# Fix runtime dependencies
-pkg_fix_deps() {
-    [ -f "$repo_dir/depends" ] || return 0
-    while read -r dep; do
-        [ -z "$dep" ] && continue
-        case $dep in *'|'*) for alt_dep in $dep; do case $alt_dep in *'|'*) continue ;; *) dep=$alt_dep; break ;; esac; done ;; esac
-        pkg_check_system "$dep" || { log "Installing dependency $dep for $1"; pkg_install "$dep"; }
-    done < "$repo_dir/depends"
 }
 
 # Strip binaries
@@ -440,400 +692,155 @@ pkg_swap() {
 
 # Install package
 pkg_install() {
-    pkg_find "$1"
-    pkg_find_version "$1"
-    pkg_check_system "$1" && return 0
-    local install_root="${BOOTSTRAP_LXPKG:-$LXPKG_ROOT}"
-    log "Preparing to install $1 version $repo_ver-$repo_rel to $install_root"
+    local pkg="$1"
+    pkg_find "$pkg" || die "Package '$pkg' not found"
+    pkg_find_version "$pkg"
+    pkg_check_system "$pkg" && return 0
+    local install_root="${BOOTSTRAP_LXPKG:-${LXPKG_ROOT:-/}}"
     
-    # Validate checksums file before proceeding
-    if [ -f "$repo_dir/checksums" ]; then
-        local checksum_lines=$(wc -l < "$repo_dir/checksums")
-        if [ "$checksum_lines" -eq 0 ]; then
-            warn "Checksum file $repo_dir/checksums is empty for $1"
-            [ "$LXPKG_SKIP_CHECKSUMS" = 1 ] || die "Cannot proceed without valid checksums"
-        fi
+    # Validate version and release
+    local clean_ver=$(printf '%s' "$repo_ver" | sed 's/[^0-9a-zA-Z.-]//g')
+    local clean_rel=$(printf '%s' "$repo_rel" | sed 's/[^0-9a-zA-Z.-]//g')
+    [ -z "$clean_ver" ] && die "Invalid version ($repo_ver) for $pkg"
+    clean_rel=${clean_rel:-0}
+    
+    log "Preparing to install $c_cyan$pkg$c_reset version $c_green$repo_ver-$repo_rel$c_reset to $c_purple$install_root$c_reset"
+    
+    # Check disk space
+    [ -z "$install_root" ] && die "Install root is empty"
+    local disk_space=$(df -k "$install_root" | tail -1 | awk '{print $4}' 2>/dev/null || echo 0)
+    [ "$disk_space" -lt 1024 ] && die "Insufficient disk space in $install_root (< 1MB available)"
+    
+    # Check and verify checksums
+    if [ "$LXPKG_SKIP_CHECKSUMS" != "1" ] && pkg_checksums "$pkg"; then
+        pkg_verify "$pkg" || {
+            warn "Checksum verification failed for $pkg"
+            prompt "Continue with installation of $pkg?"
+        }
     else
-        warn "Checksum file missing at $repo_dir/checksums for $1"
-        [ "$LXPKG_SKIP_CHECKSUMS" = 1 ] || die "Cannot proceed without checksums file"
+        log "Skipping checksum verification for $pkg"
     fi
-
+    
     # Attempt to use cached package or build
-    log "Checking for cached package $1@$repo_ver-$repo_rel"
-    pkg_cache "$1" || {
-        log "No cache found, building $1"
-        pkg_build "$1" || die "Build failed for $1"
+    log "Checking for cached package $pkg@$repo_ver-$repo_rel"
+    if ! pkg_cache "$pkg"; then
+        log "No cache found, building $pkg"
+        pkg_source "$pkg" || die "Failed to download or extract sources for $pkg"
+        pkg_build "$pkg" || die "Build failed for $pkg"
+    fi
+    
+    cd "$repo_dir" || die "Failed to change to repository directory $repo_dir"
+    mkdir -p "$pkg_dir/$pkg/$pkg_db/$pkg" || die "Failed to create package directory $pkg_dir/$pkg/$pkg_db/$pkg"
+    
+    # Generate manifest if not exists
+    [ -f "$pkg_dir/$pkg/$pkg_db/$pkg/manifest" ] || {
+        log "$pkg: Generating manifest"
+        (cd "$pkg_dir/$pkg" && find . -type f -o -type l | sed 's|^\./||' > "$pkg_dir/$pkg/$pkg_db/$pkg/manifest") || die "Failed to generate manifest for $pkg"
     }
-
-    cd "$repo_dir"
-    mkdir -p "$pkg_dir/$1/$pkg_db/$1"
-    [ -f "$pkg_dir/$1/$pkg_db/$1/manifest" ] || {
-        log "$1: Generating manifest"
-        (cd "$pkg_dir/$1" && find . -type f -o -type l | sed 's|^\./||' > "$pkg_dir/$1/$pkg_db/$1/manifest")
-    }
-
+    
+    # Validate manifest
+    local file_count=$(wc -l < "$pkg_dir/$pkg/$pkg_db/$pkg/manifest" 2>/dev/null || echo 0)
+    [ "$file_count" -eq 0 ] && die "Manifest is empty for $pkg"
+    
     # Fix dependencies
-    pkg_fix_deps "$1"
-
+    pkg_fix_deps "$pkg"
+    
     # Generate etcsums and strip binaries
-    pkg_etcsums "$1"
-    pkg_strip "$1"
-    pkg_conflicts "$1"
-
-    # Install files
-    log "Installing $1 version $repo_ver-$repo_rel"
-    local file_count=$(wc -l < "$pkg_dir/$1/$pkg_db/$1/manifest")
-    local i=0
+    pkg_etcsums "$pkg"
+    pkg_strip "$pkg"
+    pkg_conflicts "$pkg"
+    
+    # Install files with progress bar
+    log "Installing $c_cyan$pkg$c_reset version $c_green$repo_ver-$repo_rel$c_reset ($file_count files)"
+    local i=0 dir_count=0 file_count_actual=0
     while read -r file; do
         i=$((i + 1))
         local percent=$((i * 100 / file_count))
-        printf '\r%b%s %bInstalling %s: %3d%% [%s]%b' "$c_grey" "==>" "$c_grey" "$1" "$percent" "$(printf '%*s' "$((percent / 5))" | tr ' ' '#')" "$c_reset"
+        printf '\r%b%s %bInstalling %s: %3d%% [%s]%b' "$c_grey" "==>" "$c_grey" "$pkg" "$percent" "$(printf '%*s' "$((percent / 5))" | tr ' ' '#')" "$c_reset"
+        
         case $file in
-            */) mkdir -p "$install_root/$file" 2>/dev/null || : ;;
+            */)
+                dir_count=$((dir_count + 1))
+                mkdir -p "$install_root/$file" 2>/dev/null || warn "Failed to create directory $install_root/$file"
+                ;;
             *)
                 case $file in
-                    /etc/*[!/]) pkg_etc || continue ;;
-                    var/db/lxpkg/installed/*) continue ;;
+                    /etc/*[!/])
+                        pkg_etc "$pkg" "$file" && continue
+                        ;;
+                    var/db/lxpkg/installed/*)
+                        continue
+                        ;;
                 esac
-                mkdir -p "$install_root${file%/*}"
-                src_file="$pkg_dir/$1/$file"
+                mkdir -p "$install_root${file%/*}" || warn "Failed to create directory $install_root${file%/*}"
+                src_file="$pkg_dir/$pkg/$file"
                 dest_file="$install_root/$file"
-                if [ -f "$src_file" ]; then
-                    cp -f "$src_file" "$dest_file" || warn "Failed to install $src_file to $dest_file"
+                if [ -f "$src_file" ] || [ -L "$src_file" ]; then
+                    if cp -f "$src_file" "$dest_file" 2>/dev/null; then
+                        file_count_actual=$((file_count_actual + 1))
+                        [ "${LXPKG_VERBOSE:-0}" -eq 1 ] && log "Installed $src_file to $dest_file"
+                    else
+                        warn "Failed to install $src_file to $dest_file"
+                    fi
                 else
                     warn "Source file $src_file not found, skipping"
                 fi
                 ;;
         esac
-    done < "$pkg_dir/$1/$pkg_db/$1/manifest"
-    printf '\r%b%s %bInstalled %s: %3d%% [%-20s]%b\n' "$c_grey" "==>" "$c_grey" "$1" 100 "$(printf '%*s' 20 | tr ' ' '#')" "$c_reset"
-
+    done < "$pkg_dir/$pkg/$pkg_db/$pkg/manifest"
+    printf '\r%b%s %bInstalled %s: %3d%% [%-20s] (%d files, %d dirs)%b\n' "$c_grey" "==>" "$c_grey" "$pkg" 100 "$(printf '%*s' 20 | tr ' ' '#')" "$file_count_actual" "$dir_count" "$c_reset"
+    
     # Record in package database
-    log "Recording $1 in package database at $sys_db/$1"
-    mkdir -p "$sys_db/$1"
-    # Use sed for POSIX-compatible character filtering
-    clean_ver=$(printf '%s' "$repo_ver" | sed 's/[^0-9a-zA-Z.-]//g')
-    clean_rel=$(printf '%s' "$repo_rel" | sed 's/[^0-9a-zA-Z.-]//g')
-    if [ -z "$clean_ver" ]; then
-        die "Invalid version ($repo_ver) for $1"
-    fi
-    # Allow empty clean_rel, default to '0' for consistency
-    clean_rel=${clean_rel:-0}
-    printf '%s %s\n' "$clean_ver" "$clean_rel" > "$sys_db/$1/version" || die "Failed to write version file for $1"
-    cp -f "$repo_dir/depends" "$sys_db/$1/depends" 2>/dev/null || :
-    cp -f "$pkg_dir/$1/$pkg_db/$1/etcsums" "$sys_db/$1/etcsums" 2>/dev/null || :
-    cp -f "$pkg_dir/$1/$pkg_db/$1/manifest" "$sys_db/$1/manifest" || die "Failed to copy manifest for $1"
-
+    log "Recording $pkg in package database at $sys_db/$pkg"
+    mkdir -p "$sys_db/$pkg" || die "Failed to create database directory $sys_db/$pkg"
+    printf '%s %s\n' "$clean_ver" "$clean_rel" > "$sys_db/$pkg/version" || die "Failed to write version file for $pkg"
+    cp -f "$repo_dir/depends" "$sys_db/$pkg/depends" 2>/dev/null || :
+    cp -f "$pkg_dir/$pkg/$pkg_db/$pkg/etcsums" "$sys_db/$pkg/etcsums" 2>/dev/null || :
+    cp -f "$pkg_dir/$pkg/$pkg_db/$pkg/manifest" "$sys_db/$pkg/manifest" || die "Failed to copy manifest for $pkg"
+    
+    # Handle alternatives
+    pkg_alternatives "$pkg" 2>/dev/null || warn "Failed to manage alternatives for $pkg"
+    
     # Run post-install script if present
-    [ -f "$repo_dir/post-install" ] && {
-        log "Running post-install script for $1"
-        sh -e "$repo_dir/post-install" "$install_root/" || warn "Post-install script failed for $1"
-    }
-
-    log "Installed $1 successfully"
-}
-
-# Remove package
-pkg_remove() {
-    local pkg="$1" sys_db="/var/db/lxpkg/installed"
-    [ -d "$sys_db/$pkg" ] || die "Package '$pkg' not found in system"
-    [ -f "$sys_db/$pkg/manifest" ] || warn "No manifest found for $pkg, proceeding with database cleanup"
-    log "Removing $pkg from system..."
-    [ -f "/usr/src/lxpkg/repo/extra/$pkg/post-remove" ] && { log "Running post-remove script for $pkg"; sh -e "/usr/src/lxpkg/repo/extra/$pkg/post-remove" "$LXPKG_ROOT/" || warn "Post-remove script failed for $pkg"; }
-    local removed=0
-    if [ -f "$sys_db/$pkg/manifest" ]; then
-        log "Processing manifest at $sys_db/$pkg/manifest"
-        while read -r file; do
-            case $file in
-                */) continue ;;
-                *)
-                    local dest_file="$LXPKG_ROOT/$file"
-                    if [ -f "$dest_file" ] || [ -L "$dest_file" ]; then
-                        log "Removing $dest_file"
-                        rm -f "$dest_file" || warn "Failed to remove $dest_file"
-                        removed=$((removed + 1))
-                    fi
-                    ;;
-            esac
-        done < "$sys_db/$pkg/manifest"
-    fi
-    for bin_path in /usr/local/bin /usr/bin; do
-        if [ -f "$bin_path/$pkg" ]; then
-            log "Removing binary $bin_path/$pkg"
-            rm -f "$bin_path/$pkg" || warn "Failed to remove $bin_path/$pkg"
-            removed=$((removed + 1))
+    if [ -f "$repo_dir/post-install" ]; then
+        log "Running post-install script for $pkg"
+        if [ "${LXPKG_VERBOSE:-0}" -eq 1 ]; then
+            sh -e "$repo_dir/post-install" "$install_root/" 2>&1 | while read -r line; do log "Post-install: $line"; done || warn "Post-install script failed for $pkg"
+        else
+            sh -e "$repo_dir/post-install" "$install_root/" || warn "Post-install script failed for $pkg"
         fi
-    done
-    if [ -f "$sys_db/$pkg/manifest" ]; then
-        while read -r file; do
-            case $file in */) local dir="$LXPKG_ROOT/$file"; [ -d "$dir" ] && rmdir "$dir" 2>/dev/null || : ;; esac
-        done < "$sys_db/$pkg/manifest"
     fi
-    [ $removed -eq 0 ] && warn "No files removed for $pkg; cleaning up database entry"
-    log "Removing $pkg from package database at $sys_db/$pkg"
-    rm -rf "$sys_db/$pkg" || die "Failed to remove $sys_db/$pkg"
-    log "Removed $pkg successfully"
-}
-
-# List installed packages
-pkg_list() {
-    set +f
-    for pkg in "$sys_db/"*; do
-        if [ -d "$pkg" ] && [ -f "$pkg/version" ]; then
-            read -r ver rel < "$pkg/version" 2>/dev/null || continue
-            printf '%b%s %b%s-%s%b\n' "$c_cyan" "${pkg##*/}" "$c_green" "$ver" "$rel" "$c_reset"
-        fi
-    done
-    set -f
-}
-
-# Search packages
-pkg_search() {
-    set +f
-    if [ $# -eq 0 ]; then
-        IFS=:
-        for path in $LXPKG_PATH; do
-            [ -d "$path" ] || continue
-            for section in "$path"/*; do
-                [ -d "$section" ] || continue
-                for pkg_path in "$section"/*; do
-                    if [ -d "$pkg_path" ] && [ -f "$pkg_path/version" ]; then
-                        pkg_name=$(basename "$pkg_path")
-                        read -r ver rel < "$pkg_path/version" 2>/dev/null || continue
-                        printf '%b * %b%-20s %bVersion:%b %-10s %bRepository:%b %s\n' "$c_grey" "$c_cyan" "$pkg_name" "$c_grey" "$c_green" "$ver-$rel" "$c_grey" "$c_purple" "$pkg_path"
-                    fi
-                done
-            done
-        done
-        unset IFS
-    else
-        local found=0
-        IFS=:
-        for pkg in "$@"; do
-            for path in $LXPKG_PATH; do
-                [ -d "$path" ] || continue
-                for section in "$path"/*; do
-                    [ -d "$section" ] || continue
-                    for pkg_path in "$section"/*; do
-                        if [ -d "$pkg_path" ] && [ -f "$pkg_path/version" ]; then
-                            pkg_name=$(basename "$pkg_path")
-                            case "$pkg_name" in
-                                *"$pkg"*)
-                                    read -r ver rel < "$pkg_path/version" 2>/dev/null || continue
-                                    printf '%b * %b%-20s %bVersion:%b %-10s %bRepository:%b %s\n' "$c_grey" "$c_cyan" "$pkg_name" "$c_grey" "$c_green" "$ver-$rel" "$c_grey" "$c_purple" "$pkg_path"
-                                    found=1
-                                ;;
-                            esac
-                        fi
-                    done
-                done
-            done
-        done
-        unset IFS
-        [ "$found" -eq 0 ] && log "No packages found matching '$*'"
-    fi
-    set -f
-}
-
-# Update repositories
-pkg_update() {
-    for repo in $LXPKG_PATH; do
-        log "Updating repository $repo"
-        [ -d "$repo/.git" ] && { git -C "$repo" pull; git -C "$repo" submodule update --remote --init -f; }
-    done
-    log "Run 'lxpkg U' to upgrade packages"
-}
-
-# Upgrade packages
-pkg_upgrade() {
-    log "Checking for new package versions"
-    set +f
-    local installed_found=0 packages=""
-    for pkg in "$sys_db/"*; do
-        [ -d "$pkg" ] || continue
-        installed_found=1
-        pkg_name=${pkg##*/}
-        pkg_find_version "$pkg_name" "" "" "$sys_db"
-        ver_pre=$repo_ver rel_pre=$repo_rel
-        pkg_find_version "$pkg_name"
-        [ "$ver_pre-$rel_pre" != "$repo_ver-$repo_rel" ] && {
-            packages="$packages $pkg_name"
-            printf '%b%s %b%s => %s%b\n' "$c_cyan" "$pkg_name" "$c_green" "$ver_pre-$rel_pre" "$repo_ver-$repo_rel" "$c_reset"
-        }
-    done
-    set -f
-    if [ "$installed_found" -eq 0 ]; then
-        log "No installed packages found. Nothing to upgrade."
-        return 0
-    fi
-    if [ -z "$packages" ]; then
-        log "Nothing to do"
-        return 0
-    fi
-    pkg_order $packages
-    set -- $order
-    prompt "Packages to update ($#): $*"
-    for pkg; do
-        pkg_resolve_deps "$pkg"
-        pkg_build "$pkg"
-        pkg_install "$pkg"
-    done
-    log "Updated all packages"
-}
-
-# Build and install multiple packages
-pkg_build_all() {
-    for pkg; do
-        pkg_resolve_deps "$pkg"
-        pkg_build "$pkg"
-        pkg_install "$pkg"
-    done
-}
-
-# List dependencies
-pkg_depends_list() {
-    pkg_find "$1"
-    [ -f "$repo_dir/depends" ] && { log "Dependencies for $1:"; cat "$repo_dir/depends" | while read -r dep make; do [ "$make" = "make" ] || printf '%b - %b%s%b\n' "$c_grey" "$c_cyan" "$dep" "$c_reset"; done; } || log "$1 has no explicit dependencies"
-}
-
-# Show manifest
-pkg_manifest() {
-    pkg_find "$1" "" -f "$sys_db"
-    log "Files installed by $1:"
-    while read -r file; do
-        printf '%b - %b%s%b\n' "$c_grey" "$c_purple" "$LXPKG_ROOT/$file" "$c_reset"
-    done < "$sys_db/$1/manifest"
-}
-
-# Show ownership
-pkg_owns() {
-    [ -n "$1" ] || die "Usage: lxpkg o /path/to/file"
-    local file="$1"
-    case $file in
-        /*) cd -P "${LXPKG_ROOT:-/}${file%/*}" || die "Cannot access directory for $file"; [ "$PWD" = / ] && LXPKG_ROOT= ;;
-        */*) cd -P "${file%/*}" || die "Cannot access directory for $file" ;;
-        *) cd -P . || die "Cannot access current directory" ;;
-    esac
-    local search_path="${PWD#"$LXPKG_ROOT"}/${file##*/}"
-    [ -f "$PWD/${file##*/}" ] || die "File $file does not exist"
-    set +f
-    local owner=""
-    for manifest in "$sys_db"/*/manifest; do
-        [ -f "$manifest" ] || continue
-        grep -qFx "$search_path" "$manifest" && { owner=$(basename "$(dirname "$manifest")"); break; }
-    done
-    set -f
-    [ -n "$owner" ] && log "File $file is owned by $owner" || log "File $file is not owned by any package"
-}
-
-# List orphans
-pkg_orphans() {
-    log "Checking for orphaned packages..."
-    set +f
-    local core_pkgs="lxpkg gcc musl" orphans=""
-    for pkg in "$sys_db/"*; do
-        [ -d "$pkg" ] || continue
-        pkg_name=${pkg##*/}
-        contains "$core_pkgs" "$pkg_name" && continue
-        local is_dep=0
-        for other_pkg in "$sys_db/"*; do
-            [ -d "$other_pkg" ] || continue
-            [ "${other_pkg##*/}" = "$pkg_name" ] && continue
-            [ -f "$other_pkg/depends" ] && grep -q "^$pkg_name$" "$other_pkg/depends" && { is_dep=1; break; }
-        done
-        [ "$is_dep" -eq 0 ] && orphans="$orphans $pkg_name"
-    done
-    set -f
-    [ -z "$orphans" ] && log "No orphaned packages found" || for pkg in $orphans; do printf '%b * %b%s%b\n' "$c_grey" "$c_cyan" "$pkg" "$c_reset"; done
-}
-
-# List reverse dependencies (installed)
-pkg_revdepends() {
-    pkg_find "$1" "" -f "$sys_db"
-    log "Checking for packages that depend on $1..."
-    set +f
-    local found=0
-    for other_pkg in "$sys_db/"*; do
-        [ -d "$other_pkg" ] || continue
-        other_pkg_name=${other_pkg##*/}
-        [ "$other_pkg_name" = "$1" ] && continue
-        [ -f "$other_pkg/depends" ] && grep -q "^$1$" "$other_pkg/depends" && { printf '%b * %b%s%b\n' "$c_grey" "$c_cyan" "$other_pkg_name" "$c_reset"; found=1; }
-    done
-    set -f
-    [ "$found" -eq 0 ] && log "No installed packages depend on $1"
-}
-
-# List reverse dependencies (repository)
-pkg_reporevdepends() {
-    [ -n "$1" ] || die "Usage: lxpkg rr pkg"
-    local pkg="$1"
-    log "Checking for repository packages that depend on $pkg..."
-    set +f
-    local found=0
-    for repo_path in $LXPKG_PATH; do
-        for depends in "$repo_path"/*/depends; do
-            [ -f "$depends" ] || continue
-            repo_pkg=$(basename "$(dirname "$depends")")
-            grep -q "^$pkg$" "$depends" && { printf '%b * %b%s%b (in %s)\n' "$c_grey" "$c_cyan" "$repo_pkg" "$c_reset" "$repo_path"; found=1; }
-        done
-    done
-    set -f
-    [ "$found" -eq 0 ] && log "No repository packages depend on $pkg"
-}
-
-# Calculate package size
-pkg_size() {
-    pkg_find "$1" "" -f "$sys_db"
-    log "Calculating size of $1..."
-    local total_size=0
-    while read -r file; do
-        case $file in */) continue ;; esac
-        local size=$(du -sk "$LXPKG_ROOT/$file" 2>/dev/null | awk '{print $1}' || echo 0)
-        total_size=$((total_size + size))
-        case ${#size} in
-            [0-3]) hum="$size KB" ;;
-            [4-6]) hum="$((size / 1024)) MB" ;;
-            [7-9]) hum="$((size / 1024 / 1024)) GB" ;;
-            *) hum="$size B" ;;
-        esac
-        printf '%b - %b%-10s %b%s%b\n' "$c_grey" "$c_green" "$hum" "$c_purple" "$LXPKG_ROOT/$file" "$c_reset"
-    done < "$sys_db/$1/manifest"
-    case ${#total_size} in
-        [0-3]) hum="$total_size KB" ;;
-        [4-6]) hum="$((total_size / 1024)) MB" ;;
-        [7-9]) hum="$((size / 1024 / 1024)) GB" ;;
-        *) hum="$total_size B" ;;
-    esac
-    log "Total size for $1: $hum"
-}
-
-# Clean cache
-pkg_clean_cache() {
-    log "Cleaning package cache..."
-    set +f
-    for cache in "$cache_dir"/*.tar.*; do
-        [ -f "$cache" ] || continue
-        rm -f "$cache"
-        log "Removed $cache"
-    done
-    set -f
-    log "Cache cleaned."
+    
+    log "Successfully installed $c_cyan$pkg$c_reset version $c_green$repo_ver-$repo_rel$c_reset"
 }
 
 # Create temporary directories
 create_tmp_dirs() {
+    log "Setting up temporary directories..."
     cache_dir=${LXPKG_CACHEDIR:-/var/cache/lxpkg}
-    src_dir=/tmp/lxpkg-$LOGNAME-$RANDOM/src
-    bld_dir=/tmp/lxpkg-$LOGNAME-$RANDOM/build
-    pkg_dir=/tmp/lxpkg-$LOGNAME-$RANDOM/pkg
-    mkdir -p "$cache_dir" "$src_dir" "$bld_dir" "$pkg_dir"
+    src_dir=/tmp/lxpkg-$LOGNAME/src
+    bld_dir=/tmp/lxpkg-$LOGNAME/build
+    pkg_dir=/tmp/lxpkg-$LOGNAME/pkg
+    
+    for dir in "$src_dir" "$bld_dir" "$pkg_dir"; do
+        if [ -d "$dir" ]; then
+            log "Cleaning existing directory $dir"
+            rm -rf "$dir" || die "Failed to clean existing directory $dir"
+        fi
+        mkdir -p "$dir" || die "Failed to create directory $dir"
+    done
+    
+    mkdir -p "$cache_dir" || die "Failed to create cache directory $cache_dir"
     sys_db=${LXPKG_ROOT:-/}var/db/lxpkg/installed
-    sys_ch=$LXPKG_ROOT/${cho_db:=var/db/lxpkg/choices}
+    sys_ch=${LXPKG_ROOT:-/}var/db/lxpkg/choices
     pkg_db=var/db/lxpkg/installed
+    log "Temporary directories ready: $src_dir, $bld_dir, $pkg_dir"
 }
 
 # Set up trap
-trap_on() { trap 'rm -rf "$src_dir" "$pkg_dir" "$bld_dir"; exit' INT TERM EXIT; }
+trap_on() {
+    trap 'rm -rf "$src_dir" "$bld_dir" "$pkg_dir"; exit' INT TERM EXIT
+}
 
 # Parse arguments
 args() {
@@ -856,7 +863,7 @@ args() {
         l|list) shift; pkg_list ;;
         u|update) shift; pkg_update ;;
         U|upgrade) shift; pkg_upgrade ;;
-        v|version) log "lxpkg version 1.2.4" ;;
+        v|version) log "lxpkg version 1.2.7" ;;
         h|help)
             printf '%b%s%b\n' "$c_green" "lxpkg: Package manager for lxos" "$c_reset"
             printf '%b%s%b\n' "$c_grey" "Usage: lxpkg [command] [pkg...]" "$c_reset"
@@ -883,13 +890,14 @@ args() {
                 "h,help:Show this help message"; do
                 printf '  %b%-20s%b %s\n' "$c_cyan" "${cmd%%:*}" "$c_reset" "${cmd#*:}"
             done
-            printf '%b%s%b\n' "$c_green" "Environment Variables:" "$c_reset"
+            printf '%b%s%b\n' "$c_green" "Configuration file found in /etc/lxpkg.conf:" "$c_reset"
             for var in \
                 "BOOTSTRAP_LXPKG:Install to a custom root (e.g., /mnt)" \
                 "LXPKG_PATH:Repository paths (default: /usr/src/lxpkg/repo)" \
                 "LXPKG_COMPRESS:Compression type (gz, xz, zst; default: xz)" \
                 "LXPKG_SKIP_CHECKSUMS:Skip checksum verification (set to 1)" \
-                "LXPKG_STRIP:Disable binary stripping (set to 0)"; do
+                "LXPKG_STRIP:Disable binary stripping (set to 0)" \
+                "LXPKG_VERBOSE:Enable verbose logging (set to 1)"; do
                 printf '  %b%-20s%b %s\n' "$c_cyan" "${var%%:*}" "$c_reset" "${var#*:}"
             done
             exit 0
@@ -904,6 +912,8 @@ main() {
     [ -f "/etc/lxpkg.conf" ] && . /etc/lxpkg.conf
     : "${LXPKG_PATH:=/usr/src/lxpkg/repo}"
     : "${LXPKG_COMPRESS:=xz}"
+    : "${LXPKG_VERBOSE:=0}"
+    : "${LXPKG_ROOT:=/}"
     [ "$LXPKG_COLOR" = 0 ] || [ ! -t 2 ] || {
         c_reset='\033[m'
         c_grey='\033[3;90m'
@@ -917,8 +927,15 @@ main() {
     ppwd=$PWD
     cmd_su=${LXPKG_SU:-"$(command -v lx || command -v sudo || command -v doas || command -v su)"} || cmd_su=su
     cmd_get=${LXPKG_GET:-"$(command -v aria2c || command -v axel || command -v curl || command -v wget)"} || die "No download utility found"
-    create_tmp_dirs
-    trap_on
+    
+    # Only create temp directories for commands that need them
+    case "$1" in
+        b|build|c|checksum|i|install)
+            create_tmp_dirs
+            trap_on
+            ;;
+    esac
+    
     [ "$(id -u)" -eq 0 ] || [ -n "$BOOTSTRAP_LXPKG" ] || [ -n "$LXPKG_SUDO" ] || exec $cmd_su "$0" "$@"
     args "$@"
 }
