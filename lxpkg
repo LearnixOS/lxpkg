@@ -333,10 +333,35 @@ pkg_sources() {
     [ -f "$repo_dir/sources" ] && cat "$repo_dir/sources" || { warn "No sources file found for $1"; return 1; }
 }
 
-# Get dependencies
+
+# Order packages based on dependencies
+pkg_order() {
+    unset order deps
+    for pkg; do
+        pkg_depends "$pkg" raw
+    done
+
+    for pkg in $deps; do
+        contains "$*" "$pkg" && order="$order $pkg"
+    done
+    set -- $order
+}
+
+
+# Resolve dependencies for a package
 pkg_depends() {
-    pkg_find "$1"
-    [ -f "$repo_dir/depends" ] && cat "$repo_dir/depends" | while read -r dep make; do [ "$make" = "make" ] || printf '%s\n' "$dep"; done
+    local pkg="$1" type="$2"
+    [ -f "$repo_dir/depends" ] || return 0
+
+    contains "$deps" "$pkg" && return 0
+
+    while read -r dep dep_type || [ -n "$dep" ]; do
+        [ "${dep##\#*}" ] || continue
+        pkg_depends "$dep" "" "$pkg $1" "$dep_type"
+    done < "$repo_dir/depends"
+
+    [ "$type" = "make" ] && pkg_cache "$pkg" && return 0
+    deps="$deps $pkg"
 }
 
 # Check if installed
@@ -457,7 +482,7 @@ pkg_fix_deps() {
 
 # Download and extract sources
 pkg_source() {
-    pkg_find "$1"
+    pkg_find "$1" || die "Package '$1' not found"
     mkdir -p "$src_dir/$1" || die "Failed to create source directory $src_dir/$1"
     cd "$src_dir/$1" || die "Failed to change to source directory $src_dir/$1"
     if [ ! -f "$repo_dir/sources" ]; then
@@ -481,30 +506,37 @@ pkg_source() {
         case $file in
             *.tar.gz|*.tgz)
                 log "Extracting $file to $src_dir/$1"
-                if ! tar -xzf "$file" -C "$src_dir/$1"; then
+                if ! tar -xzf "$file" -C "$src_dir/$1" --strip-components=1 2>/dev/null; then
                     warn "Failed to extract $file for $1"
                     return 1
                 fi
                 ;;
             *.tar.bz2|*.tbz2)
                 log "Extracting $file to $src_dir/$1"
-                if ! tar -xjf "$file" -C "$src_dir/$1"; then
+                if ! tar -xjf "$file" -C "$src_dir/$1" --strip-components=1 2>/dev/null; then
                     warn "Failed to extract $file for $1"
                     return 1
                 fi
                 ;;
             *.tar.xz|*.txz)
                 log "Extracting $file to $src_dir/$1"
-                if ! tar -xJf "$file" -C "$src_dir/$1"; then
+                if ! tar -xJf "$file" -C "$src_dir/$1" --strip-components=1 2>/dev/null; then
                     warn "Failed to extract $file for $1"
                     return 1
                 fi
                 ;;
             *.zip)
                 log "Extracting $file to $src_dir/$1"
-                if ! unzip -q "$file" -d "$src_dir/$1"; then
+                if ! unzip -q "$file" -d "$src_dir/$1" 2>/dev/null; then
                     warn "Failed to extract $file for $1"
                     return 1
+                fi
+                # Move files from subdirectory if created
+                local extracted_dir=$(find "$src_dir/$1" -maxdepth 1 -type d -not -path "$src_dir/$1" | head -n 1)
+                if [ -n "$extracted_dir" ] && [ "$extracted_dir" != "$src_dir/$1" ]; then
+                    log "Moving files from $extracted_dir to $src_dir/$1"
+                    mv "$extracted_dir"/* "$extracted_dir"/.[!.]* "$src_dir/$1" 2>/dev/null || warn "Failed to move extracted files"
+                    rmdir "$extracted_dir" 2>/dev/null || warn "Failed to remove extracted directory"
                 fi
                 ;;
             *)
@@ -520,6 +552,7 @@ pkg_source() {
     fi
     if ! find "$src_dir/$1" -maxdepth 1 -type f | grep -q .; then
         warn "Source directory $src_dir/$1 is empty or contains no files for $1"
+        ls -la "$src_dir/$1" >&2
         return 1
     fi
     log "Source files prepared for $1 in $src_dir/$1"
@@ -546,7 +579,12 @@ pkg_build() {
     cd "$bld_dir/$1" || die "Failed to change to build directory $bld_dir/$1"
     
     log "Copying source files for $1 to $bld_dir/$1"
-    cp -r "$src_dir/$1"/* "$bld_dir/$1" 2>/dev/null || cp -r "$src_dir/$1"/.[!.]* "$bld_dir/$1" 2>/dev/null || die "Failed to copy source files for $1"
+    # Copy all contents from source directory to build directory
+    if ! cp -PRf "$src_dir/$1"/. "$bld_dir/$1" 2>&1; then
+        warn "Failed to copy source files for $1"
+        ls -la "$src_dir/$1" >&2
+        die "Failed to copy source files for $1"
+    fi
     
     local build_dir="$bld_dir/$1"
     if [ -f "Cargo.toml" ]; then
