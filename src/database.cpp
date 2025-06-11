@@ -2,8 +2,8 @@
 #include "util.hpp"
 #include <fstream>
 #include <dirent.h>
-#include <iostream> // Added for std::cerr
-#include <unistd.h> // Added for unlink
+#include <iostream> 
+#include <unistd.h> 
 
 Database::Database(const std::string& dbPath) : dbPath(dbPath) {}
 
