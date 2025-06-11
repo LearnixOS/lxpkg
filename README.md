@@ -1,6 +1,16 @@
-# lxpkg
+<div align="center">
 
-A simple, POSIX-compliant, source-based package manager in C++ inspired by KISS principles.
+
+<img src="" align="center" alt=" Preview" width="250" style="display: block; margin: 32px auto; border: 2px solid #555; border-radius: 12px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);">
+
+<div align="center">
+
+
+# LXPKG - LXOS LINUX DISTRIBUTION
+
+A simple, POSIX-compliant, source-based package manager in C++.
+
+<div align="left">
 
 ## Features
 - Install, remove, list, and search packages.
@@ -15,12 +25,9 @@ A simple, POSIX-compliant, source-based package manager in C++ inspired by KISS 
 - Supports `.tar.gz`, `.tar.xz`, and `.tar.bz2` source tarballs.
 - Updates desktop database and icon cache after installation.
 
-## Repository Structure
 
-
-
-
-
-
-#Install
-mkdir /tmp/lxpkg-build/
+## Install
+```bash
+git clone https://github.com/LearnixOS/repo /tmp/lxpkg-build/repo &&
+sudo mkdir -p /var/db/lxpkg &&
+sudo cp -r /tmp/lxpkg-build/repo /var/db/lxpkg
