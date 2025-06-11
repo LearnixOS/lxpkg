@@ -97,11 +97,10 @@ bool Package::readBuildFile(const std::string& repoPath, const std::vector<std::
         // Remove trailing whitespace
         line.erase(line.find_last_not_of(" \t") + 1);
         if (line.empty()) continue;
-        // Skip shebang and comments
         if (line.find("#!") == 0 || line[0] == '#') continue;
         // Handle line continuations
         if (line.back() == '\\') {
-            line.pop_back(); // Remove backslash
+            line.pop_back();
             fullCommand += line + " ";
             continuation = true;
         } else {
