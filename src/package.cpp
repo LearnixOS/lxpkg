@@ -184,7 +184,6 @@ std::string Package::findSourceDir() const {
     std::string sourceDir;
     while ((entry = readdir(dir))) {
         if (entry->d_type == DT_DIR && std::string(entry->d_name) != "." && std::string(entry->d_name) != "..") {
-            // Assume the first subdirectory is the source directory
             sourceDir = buildDir + "/" + entry->d_name;
             break;
         }
