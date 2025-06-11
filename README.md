@@ -34,6 +34,7 @@ A simple, POSIX-compliant, source-based package manager in C++.
 
 ## Install
 ```bash
+https://github.com/LearnixOS/lxpkg && cd lxpkg && make && sudo make install 
 git clone https://github.com/LearnixOS/repo /tmp/lxpkg-build/repo &&
 sudo mkdir -p /var/db/lxpkg &&
 sudo cp -r /tmp/lxpkg-build/repo /var/db/lxpkg
