@@ -1,11 +1,13 @@
+# ALPHA STAGE ⚠️ OUR DEVELOPER TEAM IS DOING ITS BEST TO ALWAYS IMPROVE THE PROJECT 👨‍💻
+
+
+
 <div align="center">
 
 
 <img src="showcase/LXOS.png" align="center" alt=" Preview" width="450" style="display: block; margin: 32px auto; border: 2px solid #555; border-radius: 12px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);">
 
 <div align="center">
-
-# ALPHA STAGE ⚠️ OUR DEVELOPER TEAM IS DOING ITS BEST TO ALWAYS IMPROVE THE PROJECT 👨‍💻
 
 # LXPKG - LXOS LINUX DISTRIBUTION
 
